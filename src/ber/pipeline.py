@@ -38,6 +38,27 @@ def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",)):
     log(split, "blocked", cand.shape, "per S1", cand.height / s1.height)
 
 
+def stage_dense(split, work, k=20):
+    """GPU dense retrieval per country; embeddings are not persisted (too large)."""
+    from .dense import record_text, encode, topk_by_country
+    s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=["business_name", "business_address", "country"])
+    s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["business_name", "business_address", "country"])
+    parts = []
+    for ctry in s1["country"].unique().to_list():
+        qi = np.where(s1["country"].to_numpy() == ctry)[0]
+        ci = np.where(s23["country"].to_numpy() == ctry)[0]
+        qe = encode(record_text(s1[qi]))
+        ce = encode(record_text(s23[ci]))
+        log(split, ctry, "encoded", qe.shape, ce.shape)
+        d = topk_by_country(qe, np.zeros(len(qi)), ce, np.zeros(len(ci)), k)
+        parts.append(d.with_columns(pl.Series("qi", qi[d["qi"].to_numpy()]).cast(pl.Int32),
+                                    pl.Series("ci", ci[d["ci"].to_numpy()]).cast(pl.Int32)))
+        del qe, ce
+    cand = pl.concat(parts)
+    cand.write_parquet(f"{work}/{split}_dense.parquet")
+    log(split, "dense candidates", cand.shape)
+
+
 def add_second_best(df, col, grp, name):
     """Margin of `col` over the best *other* value in group `grp` (positive only for the top one)."""
     g = (df.group_by(grp).agg(pl.col(col).max().alias("_m1"),
@@ -56,7 +77,14 @@ def build_pair_table(split, work, s1_filter=None, n_jobs=4):
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet")
     cand = pl.read_parquet(f"{work}/{split}_cand.parquet").select("qi", "ci", "tok_score", "tok_rank")
     cand = cand.with_columns(pl.col("tok_rank").cast(pl.Float32))
-    cand = context_features(cand, ["tok_score"])
+    ctx = ["tok_score"]
+    if os.path.exists(f"{work}/{split}_dense.parquet"):
+        dn = pl.read_parquet(f"{work}/{split}_dense.parquet")
+        cand = cand.join(dn, on=["qi", "ci"], how="full", coalesce=True).with_columns(
+            pl.col("tok_score").fill_null(0.0), pl.col("tok_rank").fill_null(99.0))
+        ctx.append("dense_score")
+        log(split, "with dense route", cand.height)
+    cand = context_features(cand, ctx)
     cand = add_second_best(cand, "tok_score", "ci", "tok_margin_c")
     cand = add_second_best(cand, "tok_score", "qi", "tok_margin_q")
     log(split, "pairs to featurise", cand.height)
@@ -90,3 +118,27 @@ def decode(pairs, thr, excl=True):
     if excl:
         d = d.filter(pl.col("p") == pl.col("p").max().over("m"))
     return d.filter(pl.col("p") >= thr).select("s1", "m")
+
+
+def decode_f05(pairs, excl=True, beta=0.5, floor=0.02):
+    """Expected-F_beta set selection per S1 (approximation by ratio of expectations).
+
+    For each S1 with candidate probabilities p (sorted desc) the expected score of
+    predicting the top-k is ~ (1+b2) * sum_{i<=k} p_i / (k + b2 * sum_all p);
+    predicting the empty set scores P(no true match) = prod(1 - p_i). Pick the best.
+    """
+    b2 = beta * beta
+    d = pairs
+    if excl:
+        d = d.filter(pl.col("p") == pl.col("p").max().over("m"))
+    d = d.filter(pl.col("p") >= floor).sort(["s1", "p"], descending=[False, True])
+    d = d.with_columns(
+        pl.col("p").cum_sum().over("s1").alias("_cum"),
+        pl.int_range(1, pl.len() + 1).over("s1").alias("_k"),
+        pl.col("p").sum().over("s1").alias("_S"),
+        (1 - pl.col("p")).clip(1e-6, 1).log().sum().over("s1").exp().alias("_p0"))
+    d = d.with_columns(((1 + b2) * pl.col("_cum") / (pl.col("_k") + b2 * pl.col("_S"))).alias("_e"))
+    d = d.with_columns(pl.col("_e").max().over("s1").alias("_emax"))
+    kbest = d.filter(pl.col("_e") == pl.col("_emax")).group_by("s1").agg(pl.col("_k").min().alias("_kb"))
+    d = d.join(kbest, on="s1").filter((pl.col("_k") <= pl.col("_kb")) & (pl.col("_emax") > pl.col("_p0")))
+    return d.select("s1", "m")

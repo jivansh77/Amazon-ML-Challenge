@@ -17,7 +17,7 @@ import polars as pl
 
 from ber.io import find_dataset_dir, read_ground_truth, write_id_lists
 from ber.metric import macro_f05
-from ber.pipeline import (log, stage_normalize, stage_block, build_pair_table, feature_columns, decode)
+from ber.pipeline import (log, stage_normalize, stage_block, stage_dense, build_pair_table, feature_columns, decode, decode_f05)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
@@ -26,6 +26,8 @@ ap.add_argument("--out", default=None)
 ap.add_argument("--stages", default="norm,block,train,test")
 ap.add_argument("--indic", default=os.path.join(os.path.dirname(__file__), "..", "artifacts", "indic_dict.json"))
 ap.add_argument("--k_tok", type=int, default=30)
+ap.add_argument("--k_dense", type=int, default=20)
+ap.add_argument("--reuse", default=None, help="dir with cached *_s1n/_s23n/_cand parquet files to copy in")
 ap.add_argument("--train_frac", type=float, default=1.0, help="fraction of train S1 used to fit the model")
 ap.add_argument("--jobs", type=int, default=4)
 ap.add_argument("--rounds", type=int, default=1500)
@@ -34,6 +36,11 @@ os.makedirs(a.work, exist_ok=True)
 out = a.out or os.path.join(a.work, "output")
 os.makedirs(out, exist_ok=True)
 stages = a.stages.split(",")
+if a.reuse:
+    import glob, shutil
+    for f in glob.glob(os.path.join(a.reuse, "*.parquet")):
+        if not os.path.exists(os.path.join(a.work, os.path.basename(f))):
+            os.symlink(f, os.path.join(a.work, os.path.basename(f)))
 dd = find_dataset_dir(a.data)
 
 if "norm" in stages:
@@ -42,6 +49,10 @@ if "norm" in stages:
 if "block" in stages:
     for sp in ["train", "test"]:
         stage_block(sp, a.work, k_tok=a.k_tok, n_threads=a.jobs)
+
+if "dense" in stages:
+    for sp in ["train", "test"]:
+        stage_dense(sp, a.work, k=a.k_dense)
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
@@ -82,8 +93,14 @@ if "train" in stages:
             if r["f05"] > best[0]:
                 best = (r["f05"], (float(thr), excl))
             log(f"excl={excl} thr={thr:.2f} f05={r['f05']:.4f} sing={r['f05_singletons']:.4f} matched={r['f05_matched']:.4f}")
+    for excl in [False, True]:
+        r = macro_f05(decode_f05(va, excl), truth, ids)
+        log(f"F05-decoder excl={excl} f05={r['f05']:.4f} sing={r['f05_singletons']:.4f} matched={r['f05_matched']:.4f}")
+        if r["f05"] > best[0]:
+            best = (r["f05"], ("f05", excl))
     thr, excl = best[1]
-    r = macro_f05(decode(va, thr, excl), truth, ids, by="country")
+    pv = decode_f05(va, excl) if thr == "f05" else decode(va, thr, excl)
+    r = macro_f05(pv, truth, ids, by="country")
     log("BEST", best, r)
     imp = sorted(zip(cols, bst.feature_importance("gain")), key=lambda x: -x[1])
     log("top features", [(c, int(g)) for c, g in imp[:30]])
@@ -96,7 +113,7 @@ if "test" in stages:
     tab = build_pair_table("test", a.work, n_jobs=a.jobs)
     tab = tab.with_columns(pl.Series("p", bst.predict(tab.select(cfg["cols"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter"])))
     tab.select("s1", "m", "p").write_parquet(f"{a.work}/test_scores.parquet")
-    pred = decode(tab, cfg["thr"], cfg["excl"])
+    pred = decode_f05(tab, cfg["excl"]) if cfg["thr"] == "f05" else decode(tab, cfg["thr"], cfg["excl"])
     s1_ids = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id"])["entity_id"].to_list()
     write_id_lists(f"{out}/candidate_pairs.tsv", s1_ids, tab.select("s1", "m"), "candidate_entity_ids")
     write_id_lists(f"{out}/matching_results.tsv", s1_ids, pred, "matched_entity_ids")
