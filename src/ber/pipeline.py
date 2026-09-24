@@ -77,45 +77,60 @@ def add_second_best(df, col, grp, name):
             .drop("_m1", "_m2"))
 
 
-def build_pair_table(split, work, s1_filter=None, n_jobs=4):
-    """Features for all candidates; context features are computed over ALL pairs (as at test
-    time) and only then optionally restricted to S1 rows where s1_filter is True."""
+ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("dense", "dense_score", "dense_rank")]
+
+
+def load_candidates(split, work, caps):
+    """Union of all available routes, pruned by per-route rank caps, with global context
+    features computed on blocking scores (cheap, and identical at train and test time)."""
+    cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
+    if os.path.exists(f"{work}/{split}_dense.parquet"):
+        cand = cand.join(pl.read_parquet(f"{work}/{split}_dense.parquet"), on=["qi", "ci"], how="full", coalesce=True)
+    keep = pl.lit(False)
+    ctx = []
+    for r, sc, rk in ROUTES:
+        if rk not in cand.columns:
+            cand = cand.with_columns(pl.lit(None, pl.Float32).alias(sc), pl.lit(None, pl.Float32).alias(rk))
+        cand = cand.with_columns(pl.col(sc).cast(pl.Float32), pl.col(rk).cast(pl.Float32))
+        keep = keep | (pl.col(rk) <= caps.get(r, 0))
+        ctx.append(sc)
+    n0 = cand.height
+    cand = cand.filter(keep)
+    if "key_n" not in cand.columns:
+        cand = cand.with_columns(pl.lit(None, pl.Float32).alias("key_n"))
+    cand = cand.select("qi", "ci", *[c for _, sc, rk in ROUTES for c in (sc, rk)], pl.col("key_n").cast(pl.Float32))
+    cand = cand.with_columns([pl.col(sc).fill_null(0.0) for _, sc, _ in ROUTES] +
+                             [pl.col(rk).fill_null(999.0) for _, _, rk in ROUTES] + [pl.col("key_n").fill_null(0.0)])
+    cand = context_features(cand, ctx)
+    for _, sc, _ in ROUTES:
+        cand = add_second_best(cand, sc, "ci", f"{sc}_margin_c")
+        cand = add_second_best(cand, sc, "qi", f"{sc}_margin_q")
+    log(split, "candidates", n0, "-> pruned", cand.height)
+    return cand
+
+
+def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_000):
+    """Yield feature tables for chunks of S1 rows (bounded memory)."""
     s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet")
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet")
-    cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
-    for c in ["tok_score", "tok_rank", "key_score", "key_rank", "key_n"]:
-        if c not in cand.columns:
-            cand = cand.with_columns(pl.lit(None, pl.Float32).alias(c))
-    cand = cand.select("qi", "ci", "tok_score", "tok_rank", "key_score", "key_rank", "key_n")
-    ctx = ["tok_score", "key_score"]
-    if os.path.exists(f"{work}/{split}_dense.parquet"):
-        dn = pl.read_parquet(f"{work}/{split}_dense.parquet")
-        cand = cand.join(dn, on=["qi", "ci"], how="full", coalesce=True)
-        ctx.append("dense_score")
-        log(split, "with dense route", cand.height)
-    cand = cand.with_columns([pl.col(c).cast(pl.Float32).fill_null(0.0) for c in ["tok_score", "key_score", "key_n"]] +
-                             [pl.col(c).cast(pl.Float32).fill_null(99.0) for c in ["tok_rank", "key_rank"]])
-    cand = context_features(cand, ctx)
-    cand = add_second_best(cand, "tok_score", "ci", "tok_margin_c")
-    cand = add_second_best(cand, "tok_score", "qi", "tok_margin_q")
-    log(split, "pairs to featurise", cand.height)
-    f = pair_features(s1, s23, cand, jobs=n_jobs)
-    log(split, "pair features done")
-    tab = pl.concat([cand, f], how="horizontal")
-    del f
-    tab = tab.with_columns(pl.Series("src", s23["src"].to_numpy()[tab["ci"].to_numpy()]).cast(pl.Float32),
+    s1_ids, s23_ids = s1["entity_id"].to_numpy(), s23["entity_id"].to_numpy()
+    src = s23["src"].to_numpy().astype(np.float32)
+    rows = np.arange(s1.height) if s1_filter is None else np.where(s1_filter)[0]
+    for s in range(0, len(rows), chunk_s1):
+        sub = pl.Series(rows[s:s + chunk_s1]).cast(pl.Int32).implode()
+        c = cand.filter(pl.col("qi").is_in(sub))
+        f = pair_features(s1, s23, c, jobs=n_jobs)
+        t = pl.concat([c, f], how="horizontal")
+        del f
+        t = t.with_columns(pl.Series("src", src[t["ci"].to_numpy()]),
                            ((pl.col("n_tset") + pl.col("a_tset")) / 2).alias("sim_mix"))
-    tab = context_features(tab.drop("n_cand_q", "n_cand_c"), ["sim_mix"])
-    tab = add_second_best(tab, "sim_mix", "qi", "sim_mix_margin_q")
-    tab = add_second_best(tab, "sim_mix", "ci", "sim_mix_margin_c")
-    if s1_filter is not None:
-        keep = pl.Series(np.where(s1_filter)[0]).cast(pl.Int32).implode()
-        tab = tab.filter(pl.col("qi").is_in(keep))
-    tab = tab.with_columns(
-        pl.Series("s1", s1["entity_id"].to_numpy()[tab["qi"].to_numpy()]),
-        pl.Series("m", s23["entity_id"].to_numpy()[tab["ci"].to_numpy()]))
-    log(split, "pair table", tab.shape)
-    return tab
+        t = t.with_columns((pl.col("sim_mix") - pl.col("sim_mix").max().over("qi")).alias("sim_mix_gap_q"),
+                           pl.col("sim_mix").rank("ordinal", descending=True).over("qi").cast(pl.Float32)
+                           .alias("sim_mix_rank_q"))
+        t = add_second_best(t, "sim_mix", "qi", "sim_mix_margin_q")
+        t = t.with_columns(pl.Series("s1", s1_ids[t["qi"].to_numpy()]), pl.Series("m", s23_ids[t["ci"].to_numpy()]))
+        log(split, f"chunk {s // chunk_s1}: {t.shape}")
+        yield t
 
 
 def feature_columns(tab):
