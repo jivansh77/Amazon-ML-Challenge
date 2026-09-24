@@ -14,7 +14,7 @@ import argparse, glob, json, os, subprocess
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--args", default="--stages norm,block,train,test")
-ap.add_argument("--team", default="team")
+ap.add_argument("--team", default="Yoddhas")
 ap.add_argument("--slug", default="jvmusic/amazon-ml-challenge")
 ap.add_argument("--title", default="Amazon ML Challenge")
 ap.add_argument("--note", default="")
