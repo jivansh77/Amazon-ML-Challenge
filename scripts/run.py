@@ -53,6 +53,15 @@ if "block" in stages:
 if "dense" in stages:
     for sp in ["train", "test"]:
         stage_dense(sp, a.work, k=a.k_dense)
+    # recall of the dense route (and of its union with the token route, if present)
+    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+    s23 = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+    edges = read_ground_truth(dd).with_columns(pl.lit(1).alias("y"))
+    dn = pl.read_parquet(f"{a.work}/train_dense.parquet")
+    dn = dn.with_columns(pl.Series("s1", s1[dn["qi"].to_numpy()]), pl.Series("m", s23[dn["ci"].to_numpy()]))
+    dn = dn.join(edges, on=["s1", "m"], how="left")
+    for k in [5, 10, 20, 30, 50]:
+        log(f"dense recall@{k}", round(dn.filter((pl.col("dense_rank") <= k) & (pl.col("y") == 1)).height / edges.height, 4))
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
