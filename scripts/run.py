@@ -37,10 +37,15 @@ out = a.out or os.path.join(a.work, "output")
 os.makedirs(out, exist_ok=True)
 stages = a.stages.split(",")
 if a.reuse:
-    import glob, shutil
-    for f in glob.glob(os.path.join(a.reuse, "*.parquet")):
-        if not os.path.exists(os.path.join(a.work, os.path.basename(f))):
-            os.symlink(f, os.path.join(a.work, os.path.basename(f)))
+    # comma-separated glob patterns of directories holding cached parquet stage outputs
+    import glob
+    for pat in a.reuse.split(","):
+        for d in glob.glob(pat, recursive=True):
+            for f in glob.glob(os.path.join(d, "*.parquet")):
+                dst = os.path.join(a.work, os.path.basename(f))
+                if not os.path.exists(dst):
+                    os.symlink(f, dst)
+                    log("reusing", f)
 dd = find_dataset_dir(a.data)
 
 if "norm" in stages:
