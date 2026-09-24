@@ -14,23 +14,33 @@ def record_text(df):
     return ("query: " + df["business_name"] + " | " + df["business_address"]).to_list()
 
 
-def encode(texts, batch=512, max_len=64):
-    """Encode with all visible GPUs (data-parallel via sentence-transformers multi-process)."""
+_MODELS = []
+
+
+def _models():
+    """One fp16 model copy per visible GPU (loaded once, reused across calls)."""
     import torch
     from sentence_transformers import SentenceTransformer
-    n_gpu = torch.cuda.device_count()
-    model = SentenceTransformer(MODEL, device="cuda")
-    model.max_seq_length = max_len
-    model.half()
-    if n_gpu > 1:
-        pool = model.start_multi_process_pool([f"cuda:{i}" for i in range(n_gpu)])
-        emb = model.encode_multi_process(texts, pool, batch_size=batch, normalize_embeddings=True,
-                                         chunk_size=50_000)
-        model.stop_multi_process_pool(pool)
-    else:
-        emb = model.encode(texts, batch_size=batch, normalize_embeddings=True, convert_to_numpy=True,
-                           show_progress_bar=False)
-    return emb.astype(np.float16)
+    if not _MODELS:
+        for i in range(max(torch.cuda.device_count(), 1)):
+            m = SentenceTransformer(MODEL, device=f"cuda:{i}")
+            m.max_seq_length = 64
+            m.half()
+            _MODELS.append(m)
+    return _MODELS
+
+
+def encode(texts, batch=512):
+    """Data-parallel encoding with one thread per GPU (threads, not processes: no re-import)."""
+    from concurrent.futures import ThreadPoolExecutor
+    models = _models()
+    n = len(models)
+    parts = [texts[i * len(texts) // n:(i + 1) * len(texts) // n] for i in range(n)]
+    with ThreadPoolExecutor(n) as ex:
+        embs = list(ex.map(lambda mp: mp[0].encode(mp[1], batch_size=batch, normalize_embeddings=True,
+                                                    convert_to_numpy=True, show_progress_bar=False),
+                           zip(models, parts)))
+    return np.concatenate(embs).astype(np.float16)
 
 
 def topk_by_country(q_emb, q_country, c_emb, c_country, k, chunk=8192):
