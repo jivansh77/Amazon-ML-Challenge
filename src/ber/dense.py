@@ -43,7 +43,32 @@ def encode(texts, batch=512):
     return np.concatenate(embs).astype(np.float16)
 
 
-def topk_by_country(q_emb, q_country, c_emb, c_country, k, chunk=8192):
+def topk_blocked(Q, C, k, q_chunk=2048, c_chunk=500_000):
+    """Exact top-k inner product of rows of Q against rows of C, blocked on both sides so the
+    similarity tile stays small (q_chunk x c_chunk). Q, C: torch tensors on the same device."""
+    import torch
+    k = min(k, C.shape[0])
+    out_s, out_i = [], []
+    for qs in range(0, Q.shape[0], q_chunk):
+        q = Q[qs:qs + q_chunk]
+        best_s = best_i = None
+        for cs in range(0, C.shape[0], c_chunk):
+            sim = q @ C[cs:cs + c_chunk].T
+            s, i = torch.topk(sim, min(k, sim.shape[1]), dim=1)
+            i = i + cs
+            if best_s is None:
+                best_s, best_i = s, i
+            else:
+                s = torch.cat([best_s, s], 1)
+                i = torch.cat([best_i, i], 1)
+                best_s, j = torch.topk(s, k, dim=1)
+                best_i = torch.gather(i, 1, j)
+        out_s.append(best_s.float().cpu())
+        out_i.append(best_i.cpu())
+    return torch.cat(out_s).numpy(), torch.cat(out_i).numpy()
+
+
+def topk_by_country(q_emb, q_country, c_emb, c_country, k, device="cuda"):
     import torch
     out = []
     q_country, c_country = np.asarray(q_country), np.asarray(c_country)
@@ -52,18 +77,19 @@ def topk_by_country(q_emb, q_country, c_emb, c_country, k, chunk=8192):
         ci = np.where(c_country == ctry)[0]
         if len(ci) == 0:
             continue
-        C = torch.from_numpy(c_emb[ci]).cuda()
-        for s in range(0, len(qi), chunk):
-            sub = qi[s:s + chunk]
-            Q = torch.from_numpy(q_emb[sub]).cuda()
-            sc, ix = torch.topk(Q @ C.T, min(k, len(ci)), dim=1)
-            sc, ix = sc.float().cpu().numpy(), ix.cpu().numpy()
-            out.append(pl.DataFrame({
-                "qi": np.repeat(sub, sc.shape[1]).astype(np.int32),
-                "ci": ci[ix.ravel()].astype(np.int32),
-                "dense_score": sc.ravel().astype(np.float32),
-                "dense_rank": np.tile(np.arange(1, sc.shape[1] + 1), len(sub)).astype(np.float32),
-            }))
-        del C
-        torch.cuda.empty_cache()
+        C = torch.from_numpy(c_emb[ci]).to(device)
+        Q = torch.from_numpy(q_emb[qi]).to(device)
+        if device == "cpu":
+            C, Q = C.float(), Q.float()
+        sc, ix = topk_blocked(Q, C, k)
+        kk = sc.shape[1]
+        out.append(pl.DataFrame({
+            "qi": np.repeat(qi, kk).astype(np.int32),
+            "ci": ci[ix.ravel()].astype(np.int32),
+            "dense_score": sc.ravel().astype(np.float32),
+            "dense_rank": np.tile(np.arange(1, kk + 1), len(qi)).astype(np.float32),
+        }))
+        del C, Q
+        if device != "cpu":
+            torch.cuda.empty_cache()
     return pl.concat(out)
