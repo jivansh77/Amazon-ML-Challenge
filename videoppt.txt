@@ -1,5 +1,3 @@
-(Transcribed by TurboScribe. Go Unlimited to remove this message.)
-
 Welcome to the Amazon ML Challenge 2026. This year's problem is Business Entity Resolution, a fundamental and widely encountered problem in real-world data. You will be given business records that arrive from three independent sources, each noisy and inconsistent, and the goal is to determine which of them describe the same real-world business. 
 
 In this video, I will walk you through the problem statement, the dataset, the scoring, the submission format, and how entries are judged. Let's start with where this data comes from. Consider a business signing up on Amazon Business.
@@ -45,5 +43,3 @@ This is a pure machine learning challenge, so external databases, APIs, and look
 Build something you are proud of. Resolve those entities, and enjoy the process. We are excited to see what you create.
 
 All the best.
-
-(Transcribed by TurboScribe. Go Unlimited to remove this message.)
