@@ -74,10 +74,12 @@ if "block" in stages:
 
 if "dense" in stages:
     for sp in SPLITS:
-        stage_dense(sp, a.work, k=a.k_dense)
+        stage_dense(sp, a.work, k=a.k_dense, dataset_dir=dd)
     if "train" in SPLITS:   # full-scale recall of the dense route
-        s1i = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
-        s2i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+        from ber.io import read_split
+        _s1, _s23 = read_split(dd, "train")
+        s1i, s2i = _s1["entity_id"].to_numpy(), _s23["entity_id"].to_numpy()
+        del _s1, _s23
         ed = read_ground_truth(dd).with_columns(pl.lit(1).alias("y"))
         dn = pl.read_parquet(f"{a.work}/train_dense.parquet")
         dn = dn.with_columns(pl.Series("s1", s1i[dn["qi"].to_numpy()]), pl.Series("m", s2i[dn["ci"].to_numpy()]))

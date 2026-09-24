@@ -39,19 +39,25 @@ def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",), tok_max_df=
     log(split, "blocked", cand.shape, "per S1", cand.height / s1.height)
 
 
-def stage_dense(split, work, k=20):
-    """GPU dense retrieval per country; embeddings are not persisted (too large)."""
+def stage_dense(split, work, k=20, dataset_dir=None):
+    """GPU dense retrieval per country; embeddings are not persisted (too large).
+    Uses raw text, so it can read the source files directly (same row order as *_s1n/_s23n)."""
     from .dense import record_text, encode, topk_by_country
-    s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=["business_name", "business_address", "country"])
-    s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["business_name", "business_address", "country"])
+    cols = ["business_name", "business_address", "country"]
+    if os.path.exists(f"{work}/{split}_s1n.parquet"):
+        s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=cols)
+        s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=cols)
+    else:
+        s1, s23 = read_split(dataset_dir, split)
+        s1, s23 = s1.select(cols), s23.select(cols)
     parts = []
     for ctry in s1["country"].unique().to_list():
         qi = np.where(s1["country"].to_numpy() == ctry)[0]
         ci = np.where(s23["country"].to_numpy() == ctry)[0]
-        qe = encode(record_text(s1[qi]))
         ce = encode(record_text(s23[ci]))
+        qe = encode(record_text(s1[qi]))
         log(split, ctry, "encoded", qe.shape, ce.shape)
-        d = topk_by_country(qe, np.zeros(len(qi)), ce, np.zeros(len(ci)), k)
+        d = topk_by_country(qe, np.zeros(len(qi), np.int8), ce, np.zeros(len(ci), np.int8), k)
         parts.append(d.with_columns(pl.Series("qi", qi[d["qi"].to_numpy()]).cast(pl.Int32),
                                     pl.Series("ci", ci[d["ci"].to_numpy()]).cast(pl.Int32)))
         del qe, ce

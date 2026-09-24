@@ -30,17 +30,25 @@ def _models():
     return _MODELS
 
 
-def encode(texts, batch=512):
-    """Data-parallel encoding with one thread per GPU (threads, not processes: no re-import)."""
+def encode(texts, batch=512, chunk=262_144):
+    """Data-parallel encoding with one thread per GPU (threads, not processes: no re-import).
+    Encodes in chunks and stores fp16 immediately to keep host RAM low (~0.8 KB / record)."""
     from concurrent.futures import ThreadPoolExecutor
     models = _models()
     n = len(models)
-    parts = [texts[i * len(texts) // n:(i + 1) * len(texts) // n] for i in range(n)]
+    out = np.empty((len(texts), models[0].get_sentence_embedding_dimension()), dtype=np.float16)
+
+    def run(i):
+        m = models[i]
+        lo, hi = i * len(texts) // n, (i + 1) * len(texts) // n
+        for s in range(lo, hi, chunk):
+            e = min(s + chunk, hi)
+            out[s:e] = m.encode(texts[s:e], batch_size=batch, normalize_embeddings=True,
+                                convert_to_numpy=True, show_progress_bar=False).astype(np.float16)
+
     with ThreadPoolExecutor(n) as ex:
-        embs = list(ex.map(lambda mp: mp[0].encode(mp[1], batch_size=batch, normalize_embeddings=True,
-                                                    convert_to_numpy=True, show_progress_bar=False),
-                           zip(models, parts)))
-    return np.concatenate(embs).astype(np.float16)
+        list(ex.map(run, range(n)))
+    return out
 
 
 def topk_blocked(Q, C, k, q_chunk=2048, c_chunk=500_000):
@@ -77,8 +85,9 @@ def topk_by_country(q_emb, q_country, c_emb, c_country, k, device="cuda"):
         ci = np.where(c_country == ctry)[0]
         if len(ci) == 0:
             continue
-        C = torch.from_numpy(c_emb[ci]).to(device)
-        Q = torch.from_numpy(q_emb[qi]).to(device)
+        whole_c, whole_q = len(ci) == len(c_emb), len(qi) == len(q_emb)
+        C = torch.from_numpy(c_emb if whole_c else c_emb[ci]).to(device)   # avoid a host copy when possible
+        Q = torch.from_numpy(q_emb if whole_q else q_emb[qi]).to(device)
         if device == "cpu":
             C, Q = C.float(), Q.float()
         sc, ix = topk_blocked(Q, C, k)
