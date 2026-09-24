@@ -27,6 +27,10 @@ ap.add_argument("--stages", default="norm,block,train,test")
 ap.add_argument("--indic", default=os.path.join(os.path.dirname(__file__), "..", "artifacts", "indic_dict.json"))
 ap.add_argument("--k_tok", type=int, default=30)
 ap.add_argument("--k_dense", type=int, default=20)
+ap.add_argument("--splits", default="train,test", help="splits for the norm/block/dense stages")
+ap.add_argument("--routes", default="tok,key")
+ap.add_argument("--tok_max_df", type=float, default=0.01)
+ap.add_argument("--key_cap", type=int, default=600)
 ap.add_argument("--reuse", default=None, help="dir with cached *_s1n/_s23n/_cand parquet files to copy in")
 ap.add_argument("--train_frac", type=float, default=1.0, help="fraction of train S1 used to fit the model")
 ap.add_argument("--jobs", type=int, default=4)
@@ -48,25 +52,38 @@ if a.reuse:
                     log("reusing", f)
 dd = find_dataset_dir(a.data)
 
+SPLITS = a.splits.split(",")
 if "norm" in stages:
-    for sp in ["train", "test"]:
+    for sp in SPLITS:
         stage_normalize(dd, sp, a.work, a.indic, a.jobs)
 if "block" in stages:
-    for sp in ["train", "test"]:
-        stage_block(sp, a.work, k_tok=a.k_tok, n_threads=a.jobs)
+    for sp in SPLITS:
+        stage_block(sp, a.work, k_tok=a.k_tok, n_threads=a.jobs, routes=tuple(a.routes.split(",")),
+                    tok_max_df=a.tok_max_df, key_cap=a.key_cap)
+        if sp == "train":   # full-scale recall report per route
+            s1i = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+            s2i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+            c = pl.read_parquet(f"{a.work}/train_cand.parquet")
+            c = c.with_columns(pl.Series("s1", s1i[c["qi"].to_numpy()]), pl.Series("m", s2i[c["ci"].to_numpy()]))
+            ed = read_ground_truth(dd).with_columns(pl.lit(1).alias("y"))
+            c = c.join(ed, on=["s1", "m"], how="left")
+            for r in [x for x in ["tok", "key"] if f"{x}_rank" in c.columns]:
+                log(r, [(k, round(c.filter((pl.col(f"{r}_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4))
+                        for k in [5, 10, 20, 30]])
+            log("union recall", round(c["y"].sum() / ed.height, 4), "cands/S1", round(c.height / len(s1i), 1))
 
 if "dense" in stages:
-    for sp in ["train", "test"]:
+    for sp in SPLITS:
         stage_dense(sp, a.work, k=a.k_dense)
-    # recall of the dense route (and of its union with the token route, if present)
-    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
-    s23 = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
-    edges = read_ground_truth(dd).with_columns(pl.lit(1).alias("y"))
-    dn = pl.read_parquet(f"{a.work}/train_dense.parquet")
-    dn = dn.with_columns(pl.Series("s1", s1[dn["qi"].to_numpy()]), pl.Series("m", s23[dn["ci"].to_numpy()]))
-    dn = dn.join(edges, on=["s1", "m"], how="left")
-    for k in [5, 10, 20, 30, 50]:
-        log(f"dense recall@{k}", round(dn.filter((pl.col("dense_rank") <= k) & (pl.col("y") == 1)).height / edges.height, 4))
+    if "train" in SPLITS:   # full-scale recall of the dense route
+        s1i = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+        s2i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
+        ed = read_ground_truth(dd).with_columns(pl.lit(1).alias("y"))
+        dn = pl.read_parquet(f"{a.work}/train_dense.parquet")
+        dn = dn.with_columns(pl.Series("s1", s1i[dn["qi"].to_numpy()]), pl.Series("m", s2i[dn["ci"].to_numpy()]))
+        dn = dn.join(ed, on=["s1", "m"], how="left")
+        for k in [5, 10, 20, 30, 50]:
+            log(f"dense recall@{k}", round(dn.filter((pl.col("dense_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4))
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,

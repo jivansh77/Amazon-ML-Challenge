@@ -65,14 +65,65 @@ def route_chr(s1, s23, k, n_threads):
     return _topk_by_country(q, s1["country"].to_list(), c, s23["country"].to_list(), fac, k, n_threads)
 
 
-def generate_candidates(s1, s23, k_tok=30, k_chr=15, n_threads=4, routes=("tok", "chr")):
-    """Union of routes -> frame (qi, ci, <route>_score, <route>_rank) with nulls for misses."""
+def generate_candidates(s1, s23, k_tok=30, k_chr=15, k_key=30, n_threads=4, routes=("tok",),
+                        tok_max_df=0.05, key_cap=600):
+    """Union of routes -> frame (qi, ci, <route>_score, <route>_rank, ...) with nulls for misses."""
+    import time
     parts = []
     if "tok" in routes:
-        parts.append(route_tok(s1, s23, k_tok, n_threads).rename({"score": "tok_score", "rank": "tok_rank"}))
+        t = time.time()
+        parts.append(route_tok(s1, s23, k_tok, n_threads, max_df=tok_max_df)
+                     .rename({"score": "tok_score", "rank": "tok_rank"}))
+        print(f"  tok route {parts[-1].height} pairs in {time.time() - t:.0f}s", flush=True)
     if "chr" in routes:
         parts.append(route_chr(s1, s23, k_chr, n_threads).rename({"score": "chr_score", "rank": "chr_rank"}))
+    if "key" in routes:
+        t = time.time()
+        parts.append(route_key(s1, s23, k_key, cap_frac=0.0, min_cap=key_cap))
+        print(f"  key route {parts[-1].height} pairs in {time.time() - t:.0f}s", flush=True)
     cand = parts[0]
     for p in parts[1:]:
         cand = cand.join(p, on=["qi", "ci"], how="full", coalesce=True)
     return cand
+
+
+def _record_keys(df, text_expr, addr_col):
+    """Explode records into blocking keys: unigram tokens of (name + address) plus address
+    bigrams ("327 cpl", "onkar nagar"), which stay rare even when each token is common."""
+    base = df.select(pl.int_range(pl.len(), dtype=pl.Int32).alias("idx"), "country",
+                     text_expr.str.split(" ").alias("t"), pl.col(addr_col).str.split(" ").alias("a"))
+    uni = base.select("idx", "country", "t").explode("t").rename({"t": "key"})
+    bi = (base.select("idx", "country", "a").explode("a")
+          .with_columns((pl.col("a") + "_" + pl.col("a").shift(-1).over("idx")).alias("key"))
+          .select("idx", "country", "key"))
+    return pl.concat([uni, bi]).filter(pl.col("key").is_not_null() & (pl.col("key").str.len_chars() > 1)).unique()
+
+
+def route_key(s1, s23, k=30, max_keys=8, cap_frac=5e-4, min_cap=50, chunk=100_000):
+    """Rare-key join: each record keeps its `max_keys` rarest keys whose document frequency
+    within the country is <= cap; pairs sharing keys are scored by the summed idf."""
+    k1 = _record_keys(s1, pl.col("name_core") + " " + pl.col("addr_clean"), "addr_clean")
+    k2 = _record_keys(s23, pl.col("name_core") + " " + pl.col("name_alt") + " " + pl.col("addr_clean"), "addr_clean")
+    n_c = pl.concat([s1.select("country"), s23.select("country")]).group_by("country").len().rename({"len": "n"})
+    df = (pl.concat([k1, k2]).group_by(["country", "key"]).len().rename({"len": "df"})
+          .join(n_c, on="country")
+          .with_columns((pl.col("n") / pl.col("df")).log().cast(pl.Float32).alias("idf"),
+                        pl.max_horizontal(pl.col("n") * cap_frac, pl.lit(min_cap)).alias("cap"))
+          .filter(pl.col("df") <= pl.col("cap")).select("country", "key", "df", "idf"))
+
+    def rarest(kk):
+        return (kk.join(df, on=["country", "key"])
+                .filter(pl.col("df").rank("ordinal").over("idx") <= max_keys)
+                .select("idx", "country", "key", "idf"))
+
+    k1, k2 = rarest(k1), rarest(k2)
+    out = []
+    for s in range(0, s1.height, chunk):
+        q = k1.filter((pl.col("idx") >= s) & (pl.col("idx") < s + chunk))
+        p = (q.join(k2.rename({"idx": "ci"}), on=["country", "key"], suffix="_c")
+             .group_by(["idx", "ci"]).agg(pl.col("idf").sum().alias("key_score"), pl.len().alias("key_n"))
+             .filter(pl.col("key_score").rank("ordinal", descending=True).over("idx") <= k))
+        out.append(p)
+    res = pl.concat(out).rename({"idx": "qi"}).with_columns(pl.col("qi").cast(pl.Int32), pl.col("ci").cast(pl.Int32))
+    return res.with_columns(pl.col("key_score").rank("ordinal", descending=True).over("qi")
+                            .cast(pl.Float32).alias("key_rank"), pl.col("key_n").cast(pl.Float32))

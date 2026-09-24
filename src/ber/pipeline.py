@@ -30,10 +30,11 @@ def stage_normalize(dataset_dir, split, work, indic_dict_path, n_jobs=4):
     log(split, "normalised")
 
 
-def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",)):
+def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",), tok_max_df=0.05, key_cap=600):
     s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet")
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet")
-    cand = generate_candidates(s1, s23, k_tok=k_tok, n_threads=n_threads, routes=routes)
+    cand = generate_candidates(s1, s23, k_tok=k_tok, k_key=k_tok, n_threads=n_threads, routes=routes,
+                               tok_max_df=tok_max_df, key_cap=key_cap)
     cand.write_parquet(f"{work}/{split}_cand.parquet")
     log(split, "blocked", cand.shape, "per S1", cand.height / s1.height)
 
@@ -75,15 +76,19 @@ def build_pair_table(split, work, s1_filter=None, n_jobs=4):
     time) and only then optionally restricted to S1 rows where s1_filter is True."""
     s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet")
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet")
-    cand = pl.read_parquet(f"{work}/{split}_cand.parquet").select("qi", "ci", "tok_score", "tok_rank")
-    cand = cand.with_columns(pl.col("tok_rank").cast(pl.Float32))
-    ctx = ["tok_score"]
+    cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
+    for c in ["tok_score", "tok_rank", "key_score", "key_rank", "key_n"]:
+        if c not in cand.columns:
+            cand = cand.with_columns(pl.lit(None, pl.Float32).alias(c))
+    cand = cand.select("qi", "ci", "tok_score", "tok_rank", "key_score", "key_rank", "key_n")
+    ctx = ["tok_score", "key_score"]
     if os.path.exists(f"{work}/{split}_dense.parquet"):
         dn = pl.read_parquet(f"{work}/{split}_dense.parquet")
-        cand = cand.join(dn, on=["qi", "ci"], how="full", coalesce=True).with_columns(
-            pl.col("tok_score").fill_null(0.0), pl.col("tok_rank").fill_null(99.0))
+        cand = cand.join(dn, on=["qi", "ci"], how="full", coalesce=True)
         ctx.append("dense_score")
         log(split, "with dense route", cand.height)
+    cand = cand.with_columns([pl.col(c).cast(pl.Float32).fill_null(0.0) for c in ["tok_score", "key_score", "key_n"]] +
+                             [pl.col(c).cast(pl.Float32).fill_null(99.0) for c in ["tok_rank", "key_rank"]])
     cand = context_features(cand, ctx)
     cand = add_second_best(cand, "tok_score", "ci", "tok_margin_c")
     cand = add_second_best(cand, "tok_score", "qi", "tok_margin_q")
