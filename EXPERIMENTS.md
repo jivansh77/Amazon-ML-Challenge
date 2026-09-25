@@ -311,3 +311,25 @@ Other French decoy patterns: a category word swapped at the same address (Comite
 |---|---|
 | `matching_results_dec_ce_frwords.tsv` (French words, France thr 0.97) | 1.9% |
 | `matching_results_dec_ce_frwords_frce.tsv` (+ French CE, France thr 0.97) | 5.4% |
+
+## decdup is broken on test (26 Sep): do not upload any decdup file
+
+The duplication added virtual copies only to records that match no S1 (label-derived). In training and validation, every nearby decoy therefore had an exact twin. The model learned the shortcut "no twin → real match".
+
+On validation the shortcut still works, because validation also has the twins:
+- On the 48k validation S1 with no virtual copies, decdup beats dec (0.9888 vs 0.9876; +CE 0.9895 vs 0.9893).
+- A dec + decdup average reaches 0.9900.
+
+Those S1s are the easy ones, with no decoy nearby. Test has no twins, so decdup accepts decoys:
+
+| | dec | decdup |
+|---|---|---|
+| Test S1 with best p ≥ 0.8 | 94.1% | **99.1%** |
+| Test S1 predicted empty | 5.9% | **0.9%** |
+| Training S1 with no match | 5.6% | 5.6% |
+
+- On 35,344 test S1s, dec's best candidate is below 0.3 while decdup's is at least 0.9 (15.6k US, 13.9k India, 5.9k France). The reverse happens 13 times.
+- Those S1s are almost certainly singletons, which score 0 when anything is predicted: about −0.02 on the leaderboard.
+- The earlier symptoms were the prior-shift thresholds at 0.99 in every country and 3.53 matches per S1 at thr 0.80.
+
+**Lesson:** a density simulation must not be label-conditional. Dropping S1s (dropA) was the leak-free variant, and it did not help.
