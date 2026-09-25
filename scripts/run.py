@@ -32,6 +32,7 @@ ap.add_argument("--splits", default="train,test", help="splits for the norm/bloc
 ap.add_argument("--routes", default="tok,key")
 ap.add_argument("--tok_max_df", type=float, default=0.01)
 ap.add_argument("--key_cap", type=int, default=600)
+ap.add_argument("--tok_extra", action="store_true", help="add address bigrams + compact name token to TF-IDF docs")
 ap.add_argument("--stage2", action="store_true", help="two-stage model with stage-1 score context")
 ap.add_argument("--frac_a", type=float, default=0.25, help="stage-2: fraction of train S1 for the stage-1 model")
 ap.add_argument("--frac_b", type=float, default=0.25, help="stage-2: fraction of train S1 for the stage-2 model")
@@ -66,7 +67,7 @@ if "norm" in stages:
 if "block" in stages:
     for sp in SPLITS:
         stage_block(sp, a.work, k_tok=a.k_tok, n_threads=a.jobs, routes=tuple(a.routes.split(",")),
-                    tok_max_df=a.tok_max_df, key_cap=a.key_cap)
+                    tok_max_df=a.tok_max_df, key_cap=a.key_cap, tok_extra=a.tok_extra)
         if sp == "train":   # full-scale recall report per route
             s1i = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
             s2i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()

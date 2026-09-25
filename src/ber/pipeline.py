@@ -30,11 +30,11 @@ def stage_normalize(dataset_dir, split, work, indic_dict_path, n_jobs=4):
     log(split, "normalised")
 
 
-def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",), tok_max_df=0.05, key_cap=600):
+def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",), tok_max_df=0.05, key_cap=600, tok_extra=False):
     s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet")
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet")
     cand = generate_candidates(s1, s23, k_tok=k_tok, k_key=k_tok, n_threads=n_threads, routes=routes,
-                               tok_max_df=tok_max_df, key_cap=key_cap)
+                               tok_max_df=tok_max_df, key_cap=key_cap, tok_extra=tok_extra)
     cand.write_parquet(f"{work}/{split}_cand.parquet")
     log(split, "blocked", cand.shape, "per S1", cand.height / s1.height)
 

@@ -50,9 +50,27 @@ def _topk_by_country(q_text, q_country, c_text, c_country, vec_factory, k, n_thr
     return df.with_columns(pl.col("score").rank("ordinal", descending=True).over("qi").alias("rank"))
 
 
-def route_tok(s1, s23, k, n_threads, max_df=0.05):
-    q = (s1["name_core"] + " " + s1["addr_clean"]).to_list()
-    c = (s23["name_core"] + " " + s23["name_alt"] + " " + s23["addr_clean"]).to_list()
+def _bigrams(col):
+    """Address bigram tokens ("sector_16", "2_53"): rare even when each token is common."""
+    return pl.col(col).str.split(" ").list.eval(
+        pl.element() + "_" + pl.element().shift(-1)).list.drop_nulls().list.join(" ")
+
+
+def tok_docs(df, side, extra=True):
+    """Token documents for the TF-IDF route: name core (+ DBA name for S2/S3) + address,
+    plus (extra=True) address bigrams and a compact name token ("swapmarbles")."""
+    parts = [pl.col("name_core")]
+    if side == "c":
+        parts.append(pl.col("name_alt"))
+    parts.append(pl.col("addr_clean"))
+    if extra:
+        parts += [_bigrams("addr_clean"), pl.lit("cmp_") + pl.col("name_core").str.replace_all(" ", "")]
+    return df.select(pl.concat_str(parts, separator=" ").alias("d"))["d"].to_list()
+
+
+def route_tok(s1, s23, k, n_threads, max_df=0.05, extra=False):
+    q = tok_docs(s1, "q", extra)
+    c = tok_docs(s23, "c", extra)
     fac = lambda: TfidfVectorizer(analyzer=_split, sublinear_tf=True, dtype=np.float32, min_df=1, max_df=max_df)
     return _topk_by_country(q, s1["country"].to_list(), c, s23["country"].to_list(), fac, k, n_threads)
 
@@ -66,13 +84,13 @@ def route_chr(s1, s23, k, n_threads):
 
 
 def generate_candidates(s1, s23, k_tok=30, k_chr=15, k_key=30, n_threads=4, routes=("tok",),
-                        tok_max_df=0.05, key_cap=600):
+                        tok_max_df=0.05, key_cap=600, tok_extra=False):
     """Union of routes -> frame (qi, ci, <route>_score, <route>_rank, ...) with nulls for misses."""
     import time
     parts = []
     if "tok" in routes:
         t = time.time()
-        parts.append(route_tok(s1, s23, k_tok, n_threads, max_df=tok_max_df)
+        parts.append(route_tok(s1, s23, k_tok, n_threads, max_df=tok_max_df, extra=tok_extra)
                      .rename({"score": "tok_score", "rank": "tok_rank"}))
         print(f"  tok route {parts[-1].height} pairs in {time.time() - t:.0f}s", flush=True)
     if "chr" in routes:
