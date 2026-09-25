@@ -19,6 +19,7 @@ ap.add_argument("--slug", default="jvmusic/amazon-ml-challenge")
 ap.add_argument("--title", default="Amazon ML Challenge")
 ap.add_argument("--note", default="")
 ap.add_argument("--no-push", action="store_true")
+ap.add_argument("--src-kernel", action="append", default=[], help="kernels whose cached outputs are mounted")
 a = ap.parse_args()
 root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PKG = "/kaggle/working/submission/code/business_entity_resolution"
@@ -58,7 +59,9 @@ cells += [src_file("scripts/fit_translit.py", "fit_translit.py"), src_file("scri
 cells += [
     md("## 1. Learn the Indic→Latin word dictionary from the training ground truth"),
     code(f"!mkdir -p {PKG}/artifacts && python -u {PKG}/src/fit_translit.py $DATA {PKG}/artifacts/indic_dict.json"),
-    md("## 2. Run the pipeline end-to-end"),
+    md("## 2. Run the pipeline end-to-end\n\nIf cached stage outputs from the experiment notebooks are attached "
+       "(`--reuse`), normalisation / blocking / dense retrieval are loaded from them instead of recomputed; "
+       "the code for every stage is above and the README gives the from-scratch command."),
     code(f"!python -u {PKG}/src/run.py --data $DATA --work /kaggle/working/work --out /kaggle/working/output "
          f"--indic {PKG}/artifacts/indic_dict.json {a.args}"),
     md("## 3. Validate with the official checker"),
@@ -101,7 +104,7 @@ os.makedirs(kd, exist_ok=True)
 json.dump(nb, open(f"{kd}/amazon-ml-challenge.ipynb", "w"), indent=1)
 meta = {"id": a.slug, "title": a.title, "code_file": "amazon-ml-challenge.ipynb", "language": "python",
         "kernel_type": "notebook", "is_private": True, "enable_gpu": True, "enable_tpu": False,
-        "enable_internet": True, "dataset_sources": ["jvmusic/ml-challenge"], "kernel_sources": [],
+        "enable_internet": True, "dataset_sources": ["jvmusic/ml-challenge"], "kernel_sources": a.src_kernel,
         "competition_sources": [], "model_sources": [], "machine_shape": "NvidiaTeslaT4"}
 json.dump(meta, open(f"{kd}/kernel-metadata.json", "w"), indent=1)
 print("notebook written:", len(cells), "cells")
