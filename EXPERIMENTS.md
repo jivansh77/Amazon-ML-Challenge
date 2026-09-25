@@ -113,4 +113,9 @@ Setup: single-stage model, 15% of S1, density simulation, negative sampling 0.3;
 | Blend 0.8 / 0.2 | 0.97971 | – |
 | Blend 0.5 / 0.5 | 0.97943 | – |
 
+| Random forest (XGBoost RF mode on GPU, 300 trees, depth 16) | 0.96855 @ thr 0.90 | 2 min |
+| Random forest (500 trees, depth 20) | 0.96927 @ thr 0.90 | 6 min |
+| Blend XGB 0.9 / RF 0.1 | 0.97949 | – |
+| Blend XGB 0.8 / RF 0.2 | 0.97933 | – |
+
 Blending does not help. The errors are systematic (hard decoys), not variance. XGBoost is kept alone.
