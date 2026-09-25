@@ -67,7 +67,7 @@ def _derived(df, side):
                            pl.col("addr_nums").str.split(" ").list.first().fill_null("").alias("num0"))
 
 
-def pair_features(s1, s23, cand, jobs=4, chunk=3_000_000, spaces=None):
+def pair_features(s1, s23, cand, jobs=4, chunk=1_500_000, spaces=None):
     """cand: frame with qi (row in s1) and ci (row in s23). Returns float32 feature frame.
     s1/s23 need the columns in A_COLS/B_COLS; strings are gathered per chunk."""
     ts_n, ts_a = spaces or (TokenSpace(s1["name_core"].to_list(), s23["name_core"].to_list()),

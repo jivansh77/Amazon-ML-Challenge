@@ -44,6 +44,7 @@ ap.add_argument("--cap_dense", type=int, default=30)
 ap.add_argument("--reuse", default=None, help="dir with cached *_s1n/_s23n/_cand parquet files to copy in")
 ap.add_argument("--train_frac", type=float, default=1.0, help="fraction of train S1 used to fit the model")
 ap.add_argument("--jobs", type=int, default=4)
+ap.add_argument("--chunk_s1", type=int, default=150_000, help="S1 rows per feature chunk")
 ap.add_argument("--rounds", type=int, default=1500)
 ap.add_argument("--neg_rate", type=float, default=1.0,
                 help="keep this fraction of EASY training negatives (weighted 1/rate); hard negatives always kept")
@@ -210,7 +211,7 @@ def collect(split, cand, mask, lab, ctx=None, cols=None, seed=0):
     the training rows only), the validation (s1, m, y[, p1]) frame and the feature columns."""
     rng = np.random.default_rng(seed)
     Xtr, ytr, wtr, Xva, yva, vas = [], [], [], [], [], []
-    for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs):
+    for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
         if ctx is not None:
             t = t.join(ctx, on=["qi", "ci"], how="left")
         t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
@@ -253,7 +254,7 @@ def load_model(tag, kind):
 def score_all(split, cand, model, cols, best_iter, mask=None):
     """Stage-1 probability for every candidate pair (optionally only S1 rows in mask)."""
     ps = []
-    for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs):
+    for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
         ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", predict(
             model, t.select(cols).to_numpy().astype(np.float32), best_iter)).cast(pl.Float32)))
     return pl.concat(ps)
@@ -268,40 +269,10 @@ if "train" in stages:
     if not a.stage2:
         use = h < a.train_frac * 1000
         cand = load_candidates("train", a.work, CAPS, keep_qi=use)
-        Xtr, ytr, wtr, Xva, yva, vas, cols = [], [], [], [], [], [], None
-        rng = np.random.default_rng(0)
-        for t in iter_pair_tables("train", a.work, cand, s1_filter=use, n_jobs=a.jobs):
-            t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
-            cols = cols or feature_columns(t)
-            tr = t.filter(~pl.col("is_val"))
-            w = np.ones(tr.height, np.float32)
-            if a.neg_rate < 1:
-                # hard negatives: near the top of this S1's list by any score; everything else is "easy"
-                hard = (tr["y"] == 1) | (tr["sim_mix_rank_q"] <= 5) | (tr["tok_score_rank_q"] <= 5) \
-                       | ((tr["dense_score_rank_q"] <= 5) if "dense_score_rank_q" in tr.columns else False)
-                keep = hard.to_numpy() | (rng.random(tr.height) < a.neg_rate)
-                w = np.where(hard.to_numpy(), 1.0, 1.0 / a.neg_rate).astype(np.float32)[keep]
-                tr = tr.filter(pl.Series(keep))
-            Xtr.append(tr.select(cols).to_numpy().astype(np.float32)); ytr.append(tr["y"].to_numpy().astype(np.float32))
-            wtr.append(w)
-            tv = t.filter(pl.col("is_val"))
-            Xva.append(tv.select(cols).to_numpy().astype(np.float32)); yva.append(tv["y"].to_numpy().astype(np.float32))
-            vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y"))
-            del t
+        Xtr, ytr, wtr, Xva, yva, vfr, cols = collect("train", cand, use, lab)
         del cand
-        log("features", len(cols), "train pairs (after neg sampling)", sum(map(len, ytr)), "val pairs", sum(map(len, yva)),
-            "pos", int(sum(y.sum() for y in ytr)))
-        if a.model == "xgb":
-            bst = fit_xgb(Xtr, ytr, Xva, yva, cols, "model", wtr)
-            best_iter = bst.best_iteration
-        else:
-            X = np.concatenate(Xtr + Xva); y = np.concatenate(ytr + yva)
-            w = np.concatenate(wtr + [np.ones(len(v), np.float32) for v in yva])
-            isv = np.zeros(len(y), bool); isv[sum(map(len, ytr)):] = True
-            del Xtr
-            bst = fit_lgb(X, y, isv, cols, "model", w)
-            best_iter = bst.best_iteration
-            del X
+        bst, best_iter = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model")
+        vas = [vfr]
         pv = np.concatenate([predict(bst, x, best_iter) for x in Xva])
         va = pl.concat(vas).with_columns(pl.Series("p", pv))
         del Xva, yva
@@ -351,20 +322,26 @@ if "test" in stages:
         bst = lgb.Booster(model_file=f"{a.work}/model.txt")
     cand = load_candidates("test", a.work, cfg.get("caps", CAPS))
     parts = []
+    import gc
     if not cfg.get("stage2"):
-        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
+        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
             p = predict(bst, t.select(cfg["cols"]).to_numpy().astype(np.float32), cfg["best_iter"])
-            parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
+            parts.append(t.select("qi", "ci").with_columns(pl.Series("p", p).cast(pl.Float32)))   # compact
+            del t, p; gc.collect()
         del cand
     else:
         b1 = load_model("model1", a.model)
         ctx = score_context(score_all("test", cand, b1, cfg["cols1"], cfg["best_iter1"]))
-        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
+        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
             t = t.join(ctx, on=["qi", "ci"], how="left")
             p = predict(bst, t.select(cfg["cols"]).to_numpy().astype(np.float32), cfg["best_iter"])
-            parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
+            parts.append(t.select("qi", "ci").with_columns(pl.Series("p", p).cast(pl.Float32)))
+            del t, p; gc.collect()
         del cand, ctx
-    tab = pl.concat(parts)
+    tab = pl.concat(parts); del parts
+    s1_all = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id"])["entity_id"]
+    s23_all = pl.read_parquet(f"{a.work}/test_s23n.parquet", columns=["entity_id"])["entity_id"]
+    tab = tab.with_columns(s1_all.gather(tab["qi"]).alias("s1"), s23_all.gather(tab["ci"]).alias("m")).drop("qi", "ci")
     tab.write_parquet(f"{a.work}/test_scores.parquet")
     pred = decode_f05(tab, cfg["excl"]) if cfg["thr"] == "f05" else decode(tab, cfg["thr"], cfg["excl"])
     s1_ids = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id"])["entity_id"].to_list()
