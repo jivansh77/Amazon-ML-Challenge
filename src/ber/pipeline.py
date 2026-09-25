@@ -90,7 +90,7 @@ ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("
           ("rdense", "rdense_score", "rdense_rank")]
 
 
-def load_candidates(split, work, caps, keep_qi=None, drop_qi=None):
+def load_candidates(split, work, caps, keep_qi=None, drop_qi=None, dup_mask=None, dup_near=10):
     """Union of all available routes, pruned by per-route rank caps, with global context
     features computed on blocking scores (cheap, and identical at train and test time)."""
     cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
@@ -110,6 +110,19 @@ def load_candidates(split, work, caps, keep_qi=None, drop_qi=None):
     cand = cand.filter(keep)
     extra = [pl.col("key_n").cast(pl.Float32)] if "key_n" in cand.columns else []
     cand = cand.select("qi", "ci", *[c for _, sc, rk in routes for c in (sc, rk)], *extra)
+    n23 = pl.scan_parquet(f"{work}/{split}_s23n.parquet").select(pl.len()).collect().item()
+    if dup_mask is not None:
+        # simulate the test's decoy density: every decoy record (belongs to no S1) that is near an S1
+        # gets a virtual copy (ci + n23) BEFORE the competition/context features are computed
+        near = pl.lit(False)
+        for r, sc, rk in routes:
+            near = near | (pl.col(rk) <= (2 if r == "rdense" else dup_near))
+        dec = pl.Series(np.where(dup_mask)[0]).cast(pl.Int32).implode()
+        d = cand.filter(pl.col("ci").is_in(dec) & near).with_columns((pl.col("ci") + n23).cast(pl.Int32).alias("ci"))
+        log(split, "duplicated decoy pairs", d.height)
+        cand = pl.concat([cand, d])
+    cand = cand.with_columns(pl.when(pl.col("ci") >= n23).then(pl.col("ci") - n23).otherwise(pl.col("ci"))
+                             .cast(pl.Int32).alias("cr"))
     cand = cand.with_columns([pl.col(sc).fill_null(0.0) for _, sc, _ in routes] +
                              [pl.col(rk).fill_null(999.0) for _, _, rk in routes] +
                              ([pl.col("key_n").fill_null(0.0)] if extra else []))
@@ -164,19 +177,20 @@ def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_0
         f = pair_features(s1, s23, c, jobs=n_jobs, spaces=spaces)
         t = pl.concat([c, f], how="horizontal")
         del f
-        t = t.with_columns(pl.Series("src", src[t["ci"].to_numpy()]),
+        t = t.with_columns(pl.Series("src", src[t["cr"].to_numpy()]),
                            ((pl.col("n_tset") + pl.col("a_tset")) / 2).alias("sim_mix"))
         t = t.with_columns((pl.col("sim_mix") - pl.col("sim_mix").max().over("qi")).alias("sim_mix_gap_q"),
                            pl.col("sim_mix").rank("ordinal", descending=True).over("qi").cast(pl.Float32)
                            .alias("sim_mix_rank_q"))
         t = add_second_best(t, "sim_mix", "qi", "sim_mix_margin_q")
-        t = t.with_columns(s1_ids.gather(t["qi"]).alias("s1"), s23_ids.gather(t["ci"]).alias("m"))
+        t = t.with_columns(s1_ids.gather(t["qi"]).alias("s1"), s23_ids.gather(t["cr"]).alias("m"))
+        t = t.with_columns(pl.when(pl.col("ci") != pl.col("cr")).then(pl.col("m") + "#dup").otherwise(pl.col("m")).alias("m"))
         log(split, f"chunk {s // chunk_s1}: {t.shape}")
         yield t
 
 
 def feature_columns(tab):
-    drop = {"qi", "ci", "s1", "m", "country", "y", "fold", "p", "is_val"}
+    drop = {"qi", "ci", "cr", "s1", "m", "country", "y", "fold", "p", "is_val"}
     return [c for c in tab.columns if c not in drop]
 
 
@@ -245,9 +259,10 @@ def add_triangle(split, work, ctx, jobs=4, chunk=5_000_000):
         pl.when(pl.col("ci") == pl.col("a1")).then(pl.col("a2_p")).otherwise(pl.col("a1_p")).alias("tri_anchor_p"))
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["name_core", "addr_clean"])
     nm, ad = s23["name_core"], s23["addr_clean"]
-    ci, an = t["ci"].to_numpy(), t["anchor"].to_numpy()
+    n23 = s23.height
+    ci, an = t["ci"].to_numpy() % n23, t["anchor"].to_numpy()
     has = ~np.isnan(an.astype(np.float64)) if an.dtype.kind == "f" else t["anchor"].is_not_null().to_numpy()
-    an_i = np.where(has, np.nan_to_num(an.astype(np.float64), nan=0), 0).astype(np.int64)
+    an_i = np.where(has, np.nan_to_num(an.astype(np.float64), nan=0), 0).astype(np.int64) % n23
     tn = np.full(len(ci), -1, np.float32); ta = np.full(len(ci), -1, np.float32)
     for s in range(0, len(ci), chunk):
         sl = slice(s, s + chunk)

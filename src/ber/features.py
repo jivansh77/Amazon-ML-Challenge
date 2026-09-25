@@ -75,7 +75,7 @@ def pair_features(s1, s23, cand, jobs=4, chunk=1_500_000, spaces=None):
     A = _derived(s1.select(A_COLS), "a")
     B = _derived(s23.select(B_COLS), "b")
     qi_all = cand["qi"].to_numpy()
-    ci_all = cand["ci"].to_numpy()
+    ci_all = cand["cr" if "cr" in cand.columns else "ci"].to_numpy()     # real S2/S3 row (duplicated decoys)
     parts = []
     for s in range(0, len(qi_all), chunk):
         qi, ci = qi_all[s:s + chunk], ci_all[s:s + chunk]
@@ -130,6 +130,8 @@ def pair_features(s1, s23, cand, jobs=4, chunk=1_500_000, spaces=None):
         f["a_len_b"] = gb["addr_clean"].str.len_chars().to_numpy()
         f["b_addr_empty"] = empty.astype(np.float32)
         f["x_nameb_in_addra"] = _cp(b["name_core"], a["addr_clean"], fuzz.partial_ratio, jobs)
+        if TOK_ODDS is not None:
+            f.update(decoy_features(ga["name_core"], gb["name_core"], na_, nb_))
         del a, b, ga, gb
         parts.append(pl.DataFrame({k: np.asarray(v, dtype=np.float32) for k, v in f.items()}))
     return pl.concat(parts)
@@ -150,12 +152,88 @@ def context_features(df, score_cols):
     return df.with_columns(exprs)
 
 
+TOK_ODDS = None     # {"extra": frame(token, score), "missing": frame(token, score)} or None
+
+
+def decoy_features(name_a, name_b, na_, nb_):
+    """Signature of generated decoys ("branches" of the S1 business): the S2/S3 name ADDS a qualifier
+    word ("Central", "Downtown", "Enterprises") and the house number is shifted by a small step.
+    Word scores are log-odds (match vs non-match among near-duplicate names) learned on a held-out
+    slice of training S1 (see fit_token_odds); unseen words score 0."""
+    n = len(name_a)
+    d = pl.DataFrame({"i": np.arange(n, dtype=np.int32), "a": name_a, "b": name_b}).with_columns(
+        pl.col("a").str.split(" ").alias("ta"), pl.col("b").str.split(" ").alias("tb"))
+    d = d.with_columns(pl.col("tb").list.set_difference("ta").alias("ex"),
+                       pl.col("ta").list.set_difference("tb").alias("mi"))
+    out = {"dec_n_extra": d["ex"].list.len().to_numpy().astype(np.float32),
+           "dec_n_missing": d["mi"].list.len().to_numpy().astype(np.float32)}
+    for kind, col in (("extra", "ex"), ("missing", "mi")):
+        g = (d.select("i", col).explode(col).join(TOK_ODDS[kind], left_on=col, right_on="token", how="inner")
+             .group_by("i").agg(pl.col("score").min().alias("mn"), pl.col("score").sum().alias("sm")))
+        g = pl.DataFrame({"i": np.arange(n, dtype=np.int32)}).join(g, on="i", how="left").sort("i")
+        out[f"dec_{kind}_min"] = g["mn"].fill_null(0).to_numpy().astype(np.float32)
+        out[f"dec_{kind}_sum"] = g["sm"].fill_null(0).to_numpy().astype(np.float32)
+    diff = nb_ - na_
+    out["num_first_signed"] = np.where(np.isnan(diff), np.nan, np.sign(diff) * np.log1p(np.abs(diff))).astype(np.float32)
+    return out
+
+
+# Hand-written English -> French equivalents for name qualifier words (France has no training labels;
+# its generated names use French qualifiers such as "Groupe", "Participations", "Developpement").
+FR_EQUIV = {
+    "holdings": ["holding", "participations"], "holding": ["participations"], "associates": ["associes"],
+    "development": ["developpement"], "group": ["groupe"], "central": ["centre", "centrale"], "center": ["centre"],
+    "north": ["nord"], "south": ["sud"], "east": ["est"], "west": ["ouest"], "northern": ["nord"], "southern": ["sud"],
+    "eastern": ["est"], "western": ["ouest"], "health": ["sante"], "clinic": ["clinique"], "care": ["soins"],
+    "valley": ["vallee"], "exports": ["export", "exportation"], "overseas": ["outremer"], "summit": ["sommet"],
+    "coastal": ["littoral", "cotier"], "harbor": ["port"], "global": ["globale"], "engineering": ["ingenierie"],
+    "foods": ["alimentation"], "royal": ["royale"], "digital": ["numerique"], "traders": ["negoce", "commerce"],
+    "consultants": ["conseil"], "consulting": ["conseil"], "national": ["nationale"], "partners": ["partenaires"],
+    "enterprises": ["entreprises"], "international": ["internationale"], "management": ["gestion"],
+    "investments": ["investissements"], "medical": ["medicale"], "pharmacy": ["pharmacie"], "school": ["ecole"],
+    "institute": ["institut"], "logistics": ["logistique"], "city": ["ville"], "new": ["nouveau", "nouvelle"],
+    "grand": ["grande"], "sons": ["fils"], "brothers": ["freres"], "family": ["famille"], "industries": ["industrie"],
+    "solutions": ["solution"], "technologies": ["technologie"], "distribution": ["distributions"],
+    "services": ["service"], "trading": ["negoce"], "mountain": ["montagne"], "lake": ["lac"], "river": ["riviere"],
+}
+
+
+def add_french_equivalents(t):
+    """Give French equivalents the score of their English word (when not already learned)."""
+    known = set(t["token"].to_list())
+    sc = dict(zip(t["token"].to_list(), t["score"].to_list()))
+    add = [(fr, sc[en]) for en, frs in FR_EQUIV.items() if en in sc for fr in frs if fr not in known]
+    if not add:
+        return t
+    return pl.concat([t, pl.DataFrame({"token": [x[0] for x in add], "score": [x[1] for x in add]},
+                                      schema={"token": pl.Utf8, "score": pl.Float32})]).unique("token", keep="first")
+
+
+def fit_token_odds(name_a, name_b, y, min_count=30, min_sim=80, jobs=4):
+    """Learn word log-odds from labelled near-duplicate pairs (name token-set similarity >= min_sim)."""
+    sim = cpdist(name_a, name_b, scorer=fuzz.token_set_ratio, workers=jobs)
+    d = pl.DataFrame({"a": name_a, "b": name_b, "y": y}).filter(pl.Series(sim >= min_sim))
+    d = d.with_columns(pl.col("a").str.split(" ").alias("ta"), pl.col("b").str.split(" ").alias("tb"))
+    d = d.with_columns(pl.col("tb").list.set_difference("ta").alias("ex"), pl.col("ta").list.set_difference("tb").alias("mi"))
+    P, N = int(d["y"].sum()), d.height - int(d["y"].sum())
+    base = np.log((P + 1) / (N + 1))
+    res = {}
+    for kind, col in (("extra", "ex"), ("missing", "mi")):
+        t = (d.select("y", col).explode(col).filter(pl.col(col).is_not_null() & (pl.col(col) != ""))
+             .group_by(col).agg(pl.col("y").sum().alias("pos"), pl.len().alias("n"))
+             .filter(pl.col("n") >= min_count)
+             .with_columns((((pl.col("pos") + 1) / (pl.col("n") - pl.col("pos") + 1)).log() - base).cast(pl.Float32).alias("score"))
+             .select(pl.col(col).alias("token"), "score"))
+        res[kind] = t
+    return res
+
+
 def global_sims(s1, s23, cand, jobs=4, chunk=5_000_000):
     """Name / address token-set similarity for ALL candidate pairs (cheap), so candidate-side
     competition ("how many S1s have this exact name?") can be computed over every competitor."""
     n1, n2 = s1["name_core"], s23["name_core"]
     a1, a2 = s1["addr_clean"], s23["addr_clean"]
-    qi_all, ci_all = cand["qi"].to_numpy(), cand["ci"].to_numpy()
+    qi_all, ci_all = cand["qi"].to_numpy(), cand["cr" if "cr" in cand.columns else "ci"].to_numpy()
     ns, as_ = [], []
     for s in range(0, len(qi_all), chunk):
         qi, ci = qi_all[s:s + chunk], ci_all[s:s + chunk]

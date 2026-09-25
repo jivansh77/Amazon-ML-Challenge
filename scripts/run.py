@@ -52,6 +52,8 @@ ap.add_argument("--drop_s1", type=float, default=0.0,
                 help="train/validate with this fraction of S1 removed (orphaned S2/S3 records, test-like density)")
 ap.add_argument("--s2_topk", type=int, default=0, help="stage 2 only scores the stage-1 top-k per S1 (0 = all)")
 ap.add_argument("--s2_minp", type=float, default=0.0, help="stage 2 only scores pairs with stage-1 p >= this")
+ap.add_argument("--decoy_feats", action="store_true", help="decoy-signature features (extra/missing name words, signed house-number shift)")
+ap.add_argument("--dup_decoys", action="store_true", help="duplicate near decoy candidates in training (test-like decoy density)")
 ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
@@ -224,6 +226,37 @@ def is_val(col):
     return (pl.col(col).hash(13) % 10) == 0
 
 
+def fit_decoy_odds(C, edges):
+    """Learn extra/missing word log-odds on a held-out slice C of training S1 (not used to train either
+    stage), save them next to the model, and switch the decoy features on."""
+    import ber.features as bf
+    from ber.pipeline import ROUTES
+    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "name_core"])
+    s23 = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id", "name_core"])
+    keep = pl.Series(np.where(C)[0]).cast(pl.Int32).implode()
+    parts = []
+    for f, rk, cap in [("cand", "tok_rank", CAPS["tok"]), ("dense", "dense_rank", CAPS["dense"]), ("dense_rev", "rdense_rank", CAPS["rdense"])]:
+        path = f"{a.work}/train_{f}.parquet"
+        if os.path.exists(path) and cap:
+            parts.append(pl.scan_parquet(path).filter(pl.col("qi").is_in(keep) & (pl.col(rk) <= cap)).select("qi", "ci").collect())
+    pr = pl.concat(parts).unique()
+    pr = pr.with_columns(s1["entity_id"].gather(pr["qi"]).alias("s1"), s23["entity_id"].gather(pr["ci"]).alias("m"),
+                         s1["name_core"].gather(pr["qi"]).alias("na"), s23["name_core"].gather(pr["ci"]).alias("nb"))
+    pr = pr.join(edges.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0))
+    odds = bf.fit_token_odds(pr["na"].to_list(), pr["nb"].to_list(), pr["y"].to_numpy(), jobs=a.jobs)
+    odds = {k: bf.add_french_equivalents(t) for k, t in odds.items()}
+    for k, t in odds.items():
+        t.write_parquet(f"{a.work}/tokodds_{k}.parquet")
+    bf.TOK_ODDS = odds
+    log("decoy word odds fitted on", pr.height, "pairs:", {k: v.height for k, v in odds.items()},
+        "most decoy-like extra words:", odds["extra"].sort("score").head(12)["token"].to_list())
+
+
+def load_decoy_odds():
+    import ber.features as bf
+    bf.TOK_ODDS = {k: pl.read_parquet(f"{a.work}/tokodds_{k}.parquet") for k in ("extra", "missing")}
+
+
 def s2_filter(ctx):
     """Stage 1 acts as a learned filter: only its top candidates per S1 go to stage 2 (and into
     candidate_pairs.tsv)."""
@@ -299,10 +332,17 @@ if "train" in stages:
     if a.drop_s1 > 0:
         log("dropping", int(drop.sum()), "S1 to simulate test density")
     ids_all = s1.rename({"entity_id": "s1"}).filter(pl.Series(~drop))
+    if a.decoy_feats:
+        fit_decoy_odds((h >= 900) & ~drop, edges)        # held-out 10% slice, never used by A / B / use
+    dupm = None
+    if a.dup_decoys:
+        s23i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"]
+        dupm = (~s23i.is_in(edges["m"].implode())).to_numpy()
+        log("decoy records (belong to no S1):", int(dupm.sum()))
     h = np.where(drop, 10_000, h)      # dropped S1 never enter A / B / use
     if not a.stage2:
         use = h < a.train_frac * 1000
-        cand = load_candidates("train", a.work, CAPS, keep_qi=use, drop_qi=drop if a.drop_s1 > 0 else None)
+        cand = load_candidates("train", a.work, CAPS, keep_qi=use, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm)
         Xtr, ytr, wtr, Xva, yva, vfr, cols = collect("train", cand, use, lab)
         del cand
         bst, best_iter = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model")
@@ -317,7 +357,7 @@ if "train" in stages:
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
-        cand = load_candidates("train", a.work, CAPS, drop_qi=drop if a.drop_s1 > 0 else None)
+        cand = load_candidates("train", a.work, CAPS, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm)
         # stage 1 on A
         Xtr, ytr, wtr, Xva, yva, _, cols = collect("train", cand, A, lab)
         b1, it1 = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model1")
@@ -347,7 +387,8 @@ if "train" in stages:
     log("---- final model ----")
     best = tune_decoder(va, ids, truth)
     cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS,
-                "s2_topk": a.s2_topk, "s2_minp": a.s2_minp, "triangle": a.triangle,
+                "s2_topk": a.s2_topk, "s2_minp": a.s2_minp, "triangle": a.triangle, "decoy_feats": a.decoy_feats,
+                "dup_decoys": a.dup_decoys,
                 "global_sims": a.global_sims})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
@@ -376,6 +417,8 @@ if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
     a.model = cfg.get("model", "lgb")
     _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims   # must match training
+    if cfg.get("decoy_feats"):
+        load_decoy_odds()
     if a.model == "xgb":
         import xgboost as xgb
         bst = xgb.Booster(); bst.load_model(f"{a.work}/model.json")
