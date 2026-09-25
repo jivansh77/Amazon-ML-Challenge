@@ -98,3 +98,17 @@ Validation is on 10% of the model-training S1 entities, hashed by S1 id. Candida
 **Top features by gain:**
 - The candidate-side competition features dominate: `tok_score_margin_c`, `tok_score_rank_c`, `tok_score_gap_c`. They describe how this S1 compares with the other S1s competing for the same S2/S3 record.
 - These are followed by the house-number features `num_tset` and `num_first_ratio`, then the name similarities.
+
+## Model comparison on identical data (Colab T4, `ber-dump` features)
+
+Setup: single-stage model, 15% of S1, density simulation, negative sampling 0.3; 3.95M training pairs and 0.98M validation pairs.
+
+| Model | Best val F0.5 | Time |
+|---|---|---|
+| **XGBoost** (lossguide, 255 leaves) | **0.97986** @ thr 0.75 | 2 min |
+| CatBoost (depth 8, lr 0.08, 6000 iterations, did not converge) | 0.97835 @ thr 0.70 | 9 min |
+| Blend 0.9 / 0.1 | 0.97967 | – |
+| Blend 0.8 / 0.2 | 0.97971 | – |
+| Blend 0.5 / 0.5 | 0.97943 | – |
+
+Blending does not help. The errors are systematic (hard decoys), not variance. XGBoost is kept alone.
