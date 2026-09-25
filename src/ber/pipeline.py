@@ -112,6 +112,9 @@ def load_candidates(split, work, caps, keep_qi=None):
     return cand
 
 
+_SPACES = {}
+
+
 def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_000):
     """Yield feature tables for chunks of S1 rows (bounded memory)."""
     from .features import A_COLS, B_COLS, TokenSpace
@@ -119,8 +122,10 @@ def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_0
     s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["entity_id", "src"] + B_COLS)
     s1_ids, s23_ids = s1["entity_id"], s23["entity_id"]
     src = s23["src"].to_numpy().astype(np.float32)
-    spaces = (TokenSpace(s1["name_core"].to_list(), s23["name_core"].to_list()),
-              TokenSpace(s1["addr_clean"].to_list(), s23["addr_clean"].to_list()))
+    if split not in _SPACES:     # idf/token spaces are reused across passes over the same split
+        _SPACES[split] = (TokenSpace(s1["name_core"].to_list(), s23["name_core"].to_list()),
+                          TokenSpace(s1["addr_clean"].to_list(), s23["addr_clean"].to_list()))
+    spaces = _SPACES[split]
     rows = np.arange(s1.height) if s1_filter is None else np.where(s1_filter)[0]
     for s in range(0, len(rows), chunk_s1):
         sub = pl.Series(rows[s:s + chunk_s1]).cast(pl.Int32).implode()

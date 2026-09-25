@@ -175,32 +175,32 @@ if "train" in stages:
         log("stage1 features", len(cols), "pairs", len(y), "pos", int(y.sum()))
         b1 = fit_lgb(X, y, isv, cols, "model1")
         del X
-        # stage-1 scores for every non-A pair (out-of-sample); keep B feature rows for stage 2
-        ps, Bt = [], []
-        for t in iter_pair_tables("train", a.work, cand, s1_filter=~A, n_jobs=a.jobs):
-            t = t.with_columns(pl.Series("p1", b1.predict(t.select(cols).to_numpy().astype(np.float32),
-                                                         num_iteration=b1.best_iteration)).cast(pl.Float32))
-            ps.append(t.select("qi", "ci", "p1"))
-            Bt.append(t.filter(pl.col("qi").is_in(
-                pl.Series(np.where(B)[0]).cast(pl.Int32).implode())))
-        # A pairs: in-sample stage-1 scores (only used as competitors in the context features)
-        for t in iter_pair_tables("train", a.work, cand, s1_filter=A, n_jobs=a.jobs):
-            ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", b1.predict(
-                t.select(cols).to_numpy().astype(np.float32), num_iteration=b1.best_iteration)).cast(pl.Float32)))
-        del cand
+        # stage-1 scores for EVERY pair (A rows are in-sample; they only act as competitors in the
+        # context features). Only (qi, ci, p1) is kept to bound memory.
+        ps = []
+        for msk in (~A, A):
+            for t in iter_pair_tables("train", a.work, cand, s1_filter=msk, n_jobs=a.jobs):
+                ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", b1.predict(
+                    t.select(cols).to_numpy().astype(np.float32), num_iteration=b1.best_iteration)).cast(pl.Float32)))
         ctx = score_context(pl.concat(ps)); del ps
-        tb = pl.concat(Bt).drop("p1").join(ctx, on=["qi", "ci"], how="left"); del Bt, ctx
-        tb = tb.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
-        cols2 = feature_columns(tb)
-        X = tb.select(cols2).to_numpy().astype(np.float32)
-        y, isv = tb["y"].to_numpy(), tb["is_val"].to_numpy()
+        # stage-2 training rows: features for B are recomputed (cheap) and joined with the context
+        Xs, ys, vs, vas, cols2 = [], [], [], [], None
+        for t in iter_pair_tables("train", a.work, cand, s1_filter=B, n_jobs=a.jobs):
+            t = t.join(ctx, on=["qi", "ci"], how="left").join(lab, on=["s1", "m"], how="left") \
+                 .with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
+            cols2 = cols2 or feature_columns(t)
+            Xs.append(t.select(cols2).to_numpy().astype(np.float32)); ys.append(t["y"].to_numpy())
+            vs.append(t["is_val"].to_numpy()); vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y", "p1"))
+        del cand, ctx
+        X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs); del Xs, ys, vs
+        tbv = pl.concat(vas)
         log("stage2 features", len(cols2), "pairs", len(y), "pos", int(y.sum()))
         bst = fit_lgb(X, y, isv, cols2, "model")
-        va = tb.filter(pl.col("is_val")).select("s1", "m", "y").with_columns(
+        va = tbv.select("s1", "m", "y").with_columns(
             pl.Series("p", bst.predict(X[isv], num_iteration=bst.best_iteration)))
         # stage-1-only score on the same validation rows, for comparison
-        va1 = tb.filter(pl.col("is_val")).select("s1", "m", "y", pl.col("p1").alias("p"))
-        del X, tb
+        va1 = tbv.select("s1", "m", "y", pl.col("p1").alias("p"))
+        del X, tbv
         ids = ids_all.filter(pl.Series(B)).filter(is_val("s1"))
         truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
         log("---- stage-1 only on stage-2 validation rows ----")
