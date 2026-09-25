@@ -166,3 +166,36 @@ Decoys are "branches" of the S1 business: the same name plus an ADDED qualifier 
 **Runs:**
 - `ber-dec-train`: best recipe + decoy features + stage-1 filter (top 15, p ≥ 0.005).
 - `ber-decdup-train`: the same + decoy duplication (test-like density in both training and validation).
+
+## Cross-encoder (`ber-ce`, Kaggle T4)
+
+**Setup:**
+- Model: `intfloat/multilingual-e5-small` (MIT) fine-tuned as a cross-encoder on "name | address" pairs.
+- Training data: 2.23M hard pairs from training S1s outside the big model's validation set, 24% positives. Negatives are the candidates within rank 5, plus 35% of the rest.
+- Training: 55-minute time cap (1.49M pairs seen), max length 128, lr 5e-5, fp16.
+- The saved model (`ce_model`) scores any model's uncertain band (0.02 ≤ p < 0.998).
+
+**On the big model's validation band (75k pairs):**
+
+| Scorer | AUC |
+|---|---|
+| Stage-2 model | 0.9657 |
+| Cross-encoder | 0.9559 |
+| **Mean of the two** | **0.9768** |
+
+The two are complementary.
+
+**Blend on big's validation (logit average, w = weight of the stage-2 model):**
+
+| w | Val F0.5 |
+|---|---|
+| 1.0 (big alone) | 0.9840 |
+| 0.8 | 0.9866 |
+| **0.6** | **0.9874** |
+| 0.5 | 0.9871 |
+
+Linear averaging is a little weaker (best 0.9862).
+
+**big + CE test file** (`matching_results_big_ce_percountry.tsv`): per-country thresholds US 0.70 / India 0.80 / France 0.97, 3.33 matches per S1.
+
+The next step is `ber-cescore-dec`, which applies the saved cross-encoder to the dec model's bands.
