@@ -333,3 +333,39 @@ Those S1s are the easy ones, with no decoy nearby. Test has no twins, so decdup 
 - The earlier symptoms were the prior-shift thresholds at 0.99 in every country and 3.53 matches per S1 at thr 0.80.
 
 **Lesson:** a density simulation must not be label-conditional. Dropping S1s (dropA) was the leak-free variant, and it did not help.
+
+## France threshold: two estimates disagree, so the LB decides
+
+**Label-shift EM (Saerens):**
+- Isotonic calibration of the blended score on validation (after exclusivity; positive share 0.856).
+- Then per test country, EM on the pair prior, and the threshold where the corrected probability reaches 0.78.
+
+| Variant | US | India | France |
+|---|---|---|---|
+| dec_ce | prior 0.90, thr 0.78 | prior 0.92, thr 0.74 | prior 0.82, **thr 0.84** |
+| + French words | 0.78 | 0.74 | 0.80 |
+| + French words + French CE | 0.78 | 0.74 | 0.86 |
+
+**Per-band count estimate (`prior_thresholds`):** France 0.97–0.98.
+
+The EM assumes France's score distribution given the label equals validation's. The band count assumes France has as many true matches per S1 per band as US/India. Neither holds for sure.
+
+**Probes on dec_ce, France threshold only (US/India unchanged):**
+
+| File | France threshold |
+|---|---|
+| `dec_ce_fr99` | 0.99 |
+| `dec_ce_percountry` | 0.97 |
+| `dec_ce_fr93` | 0.93 |
+| `dec_ce_fr85` | 0.85 |
+
+Each LB difference is the net value of one France band.
+
+**Upload plan, 26 Sep 4pm:**
+1. dec_ce_percountry
+2. dec_ce_frwords_frce
+3. dec_ce_fr99
+4. dec_ce_fr93
+5. dec_ce_fr85
+
+dec_ce_frwords (words only) is kept for 27 Sep if needed.
