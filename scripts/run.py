@@ -205,6 +205,60 @@ def is_val(col):
     return (pl.col(col).hash(13) % 10) == 0
 
 
+def collect(split, cand, mask, lab, ctx=None, cols=None, seed=0):
+    """Featurise the S1 rows in `mask`; return train/val chunk lists (with easy-negative sampling on
+    the training rows only), the validation (s1, m, y[, p1]) frame and the feature columns."""
+    rng = np.random.default_rng(seed)
+    Xtr, ytr, wtr, Xva, yva, vas = [], [], [], [], [], []
+    for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs):
+        if ctx is not None:
+            t = t.join(ctx, on=["qi", "ci"], how="left")
+        t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
+        cols = cols or feature_columns(t)
+        tr = t.filter(~pl.col("is_val"))
+        w = np.ones(tr.height, np.float32)
+        if a.neg_rate < 1:
+            hard = ((tr["y"] == 1) | (tr["sim_mix_rank_q"] <= 5) | (tr["tok_score_rank_q"] <= 5)
+                    | ((tr["dense_score_rank_q"] <= 5) if "dense_score_rank_q" in tr.columns else False)).to_numpy()
+            keep = hard | (rng.random(tr.height) < a.neg_rate)
+            w = np.where(hard, 1.0, 1.0 / a.neg_rate).astype(np.float32)[keep]
+            tr = tr.filter(pl.Series(keep))
+        Xtr.append(tr.select(cols).to_numpy().astype(np.float32)); ytr.append(tr["y"].to_numpy().astype(np.float32))
+        wtr.append(w)
+        tv = t.filter(pl.col("is_val"))
+        Xva.append(tv.select(cols).to_numpy().astype(np.float32)); yva.append(tv["y"].to_numpy().astype(np.float32))
+        vas.append(tv.select("s1", "m", "y", *(["p1"] if "p1" in tv.columns else [])))
+    log(split, "collected train", sum(map(len, ytr)), "val", sum(map(len, yva)), "pos", int(sum(y.sum() for y in ytr)))
+    return Xtr, ytr, wtr, Xva, yva, pl.concat(vas), cols
+
+
+def fit_model(Xtr, ytr, wtr, Xva, yva, cols, tag):
+    if a.model == "xgb":
+        bst = fit_xgb(Xtr, ytr, Xva, yva, cols, tag, wtr)
+        return bst, bst.best_iteration
+    X = np.concatenate(Xtr + Xva); y = np.concatenate(ytr + yva)
+    w = np.concatenate(wtr + [np.ones(len(v), np.float32) for v in yva])
+    isv = np.zeros(len(y), bool); isv[sum(map(len, ytr)):] = True
+    bst = fit_lgb(X, y, isv, cols, tag, w)
+    return bst, bst.best_iteration
+
+
+def load_model(tag, kind):
+    if kind == "xgb":
+        import xgboost as xgb
+        b = xgb.Booster(); b.load_model(f"{a.work}/{tag}.json"); return b
+    return lgb.Booster(model_file=f"{a.work}/{tag}.txt")
+
+
+def score_all(split, cand, model, cols, best_iter, mask=None):
+    """Stage-1 probability for every candidate pair (optionally only S1 rows in mask)."""
+    ps = []
+    for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs):
+        ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", predict(
+            model, t.select(cols).to_numpy().astype(np.float32), best_iter)).cast(pl.Float32)))
+    return pl.concat(ps)
+
+
 if "train" in stages:
     s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"])
     h = s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy()
@@ -259,48 +313,27 @@ if "train" in stages:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
         cand = load_candidates("train", a.work, CAPS)
-        # stage 1: fit on A
-        Xs, ys, vs, cols = [], [], [], None
-        for t in iter_pair_tables("train", a.work, cand, s1_filter=A, n_jobs=a.jobs):
-            t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
-            cols = cols or feature_columns(t)
-            Xs.append(t.select(cols).to_numpy().astype(np.float32)); ys.append(t["y"].to_numpy()); vs.append(t["is_val"].to_numpy())
-        X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs); del Xs, ys, vs
-        log("stage1 features", len(cols), "pairs", len(y), "pos", int(y.sum()))
-        b1 = fit_lgb(X, y, isv, cols, "model1")
-        del X
-        # stage-1 scores for EVERY pair (A rows are in-sample; they only act as competitors in the
-        # context features). Only (qi, ci, p1) is kept to bound memory.
-        ps = []
-        for msk in (~A, A):
-            for t in iter_pair_tables("train", a.work, cand, s1_filter=msk, n_jobs=a.jobs):
-                ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", b1.predict(
-                    t.select(cols).to_numpy().astype(np.float32), num_iteration=b1.best_iteration)).cast(pl.Float32)))
-        ctx = score_context(pl.concat(ps)); del ps
-        # stage-2 training rows: features for B are recomputed (cheap) and joined with the context
-        Xs, ys, vs, vas, cols2 = [], [], [], [], None
-        for t in iter_pair_tables("train", a.work, cand, s1_filter=B, n_jobs=a.jobs):
-            t = t.join(ctx, on=["qi", "ci"], how="left").join(lab, on=["s1", "m"], how="left") \
-                 .with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
-            cols2 = cols2 or feature_columns(t)
-            Xs.append(t.select(cols2).to_numpy().astype(np.float32)); ys.append(t["y"].to_numpy())
-            vs.append(t["is_val"].to_numpy()); vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y", "p1"))
+        # stage 1 on A
+        Xtr, ytr, wtr, Xva, yva, _, cols = collect("train", cand, A, lab)
+        b1, it1 = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model1")
+        Xtr = ytr = wtr = Xva = yva = None; import gc; gc.collect()
+        # stage-1 scores for EVERY train pair (A rows are in-sample; they only act as competitors)
+        ctx = score_context(score_all("train", cand, b1, cols, it1))
+        ctx = ctx.filter(pl.col("qi").is_in(pl.Series(np.where(B)[0]).cast(pl.Int32).implode()))
+        gc.collect()
+        # stage 2 on B
+        Xtr, ytr, wtr, Xva, yva, tbv, cols2 = collect("train", cand, B, lab, ctx=ctx, seed=1)
         del cand, ctx
-        X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs); del Xs, ys, vs
-        tbv = pl.concat(vas)
-        log("stage2 features", len(cols2), "pairs", len(y), "pos", int(y.sum()))
-        bst = fit_lgb(X, y, isv, cols2, "model")
+        bst, it2 = fit_model(Xtr, ytr, wtr, Xva, yva, cols2, "model")
         va = tbv.select("s1", "m", "y").with_columns(
-            pl.Series("p", bst.predict(X[isv], num_iteration=bst.best_iteration)))
-        # stage-1-only score on the same validation rows, for comparison
+            pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva])))
         va1 = tbv.select("s1", "m", "y", pl.col("p1").alias("p"))
-        del X, tbv
+        Xtr = ytr = wtr = Xva = yva = None; gc.collect()
         ids = ids_all.filter(pl.Series(B)).filter(is_val("s1"))
         truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
         log("---- stage-1 only on stage-2 validation rows ----")
         tune_decoder(va1, ids, truth)
-        cfg = {"cols": cols2, "cols1": cols, "best_iter": bst.best_iteration, "best_iter1": b1.best_iteration,
-               "stage2": True}
+        cfg = {"cols": cols2, "cols1": cols, "best_iter": it2, "best_iter1": it1, "stage2": True, "model": a.model}
     va.write_parquet(f"{a.work}/val_scores.parquet")
     truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
     log("---- final model ----")
@@ -324,15 +357,11 @@ if "test" in stages:
             parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
         del cand
     else:
-        b1 = lgb.Booster(model_file=f"{a.work}/model1.txt")
-        ps = []
-        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
-            ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", b1.predict(
-                t.select(cfg["cols1"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter1"])).cast(pl.Float32)))
-        ctx = score_context(pl.concat(ps)); del ps
+        b1 = load_model("model1", a.model)
+        ctx = score_context(score_all("test", cand, b1, cfg["cols1"], cfg["best_iter1"]))
         for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
             t = t.join(ctx, on=["qi", "ci"], how="left")
-            p = bst.predict(t.select(cfg["cols"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter"])
+            p = predict(bst, t.select(cfg["cols"]).to_numpy().astype(np.float32), cfg["best_iter"])
             parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
         del cand, ctx
     tab = pl.concat(parts)
