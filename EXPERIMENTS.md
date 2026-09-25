@@ -399,3 +399,15 @@ After calibration:
 - Typos such as "farmacie" → +1.11.
 
 `ber-dec-test3` re-scores test with v2 (CPU kernel).
+
+**`ber-dec-test3`** (French words v2, calibrated):
+
+| File | Words | CE for France | France rows changed vs dec_ce | France S1 predicted empty |
+|---|---|---|---|---|
+| dec_ce (baseline) | – | original | – | 6.57% |
+| `dec_ce_frv2` | v2 | original | 2.95% | 6.65% |
+| `dec_ce_frv2_frce` | v2 | French | 6.40% | 6.79% |
+
+- US/India are identical in all three.
+- Candidate file: `candidate_pairs_dec_frv2.tsv` (4.13 per S1).
+- Both files replace the v1 France files in the upload plan.
