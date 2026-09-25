@@ -45,6 +45,7 @@ ap.add_argument("--reuse", default=None, help="dir with cached *_s1n/_s23n/_cand
 ap.add_argument("--train_frac", type=float, default=1.0, help="fraction of train S1 used to fit the model")
 ap.add_argument("--jobs", type=int, default=4)
 ap.add_argument("--rounds", type=int, default=1500)
+ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
 a = ap.parse_args()
 os.makedirs(a.work, exist_ok=True)
@@ -62,6 +63,8 @@ if a.reuse:
                     os.symlink(f, dst)
                     log("reusing", f)
 dd = find_dataset_dir(a.data)
+import ber.pipeline as _bp
+_bp.GLOBAL_SIMS = a.global_sims
 
 SPLITS = a.splits.split(",")
 if "norm" in stages:

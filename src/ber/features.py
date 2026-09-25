@@ -11,7 +11,7 @@ import numpy as np
 import polars as pl
 import scipy.sparse as sp
 from rapidfuzz import fuzz
-from rapidfuzz.distance import JaroWinkler
+from rapidfuzz.distance import JaroWinkler, Levenshtein
 from rapidfuzz.process import cpdist
 from sklearn.feature_extraction.text import CountVectorizer
 
@@ -116,6 +116,16 @@ def pair_features(s1, s23, cand, jobs=4, chunk=3_000_000, spaces=None):
         f["num_tset"] = np.where(no_num, -1, _cp(a["addr_nums"], b["addr_nums"], fuzz.token_set_ratio, jobs))
         f["num_first_eq"] = np.where(no_num, -1, (ga["num0"] == gb["num0"]).to_numpy().astype(np.float32))
         f["num_first_ratio"] = np.where(no_num, -1, _cp(a["num0"], b["num0"], fuzz.ratio, jobs))
+        # house-number perturbations are digit edits (705 vs 703); different businesses differ numerically
+        f["num_first_lev"] = np.where(no_num, -1, cpdist(a["num0"], b["num0"], scorer=Levenshtein.distance,
+                                                         workers=jobs, dtype=np.int32))
+        na_ = ga["num0"].str.extract(r"^(\d+)").cast(pl.Float64, strict=False).to_numpy()
+        nb_ = gb["num0"].str.extract(r"^(\d+)").cast(pl.Float64, strict=False).to_numpy()
+        f["num_first_absdiff"] = np.where(np.isnan(na_) | np.isnan(nb_), -1, np.log1p(np.abs(na_ - nb_)))
+        f["num_first_lendiff"] = np.where(no_num, -1, np.abs(ga["num0"].str.len_chars().to_numpy().astype(np.int32)
+                                                              - gb["num0"].str.len_chars().to_numpy().astype(np.int32)))
+        f["num_count_a"] = ga["addr_nums"].str.count_matches(r"\S+").to_numpy()
+        f["num_count_b"] = gb["addr_nums"].str.count_matches(r"\S+").to_numpy()
         f["a_len_a"] = ga["addr_clean"].str.len_chars().to_numpy()
         f["a_len_b"] = gb["addr_clean"].str.len_chars().to_numpy()
         f["b_addr_empty"] = empty.astype(np.float32)
@@ -138,3 +148,19 @@ def context_features(df, score_cols):
     exprs += [pl.len().over("qi").cast(pl.Float32).alias("n_cand_q"),
               pl.len().over("ci").cast(pl.Float32).alias("n_cand_c")]
     return df.with_columns(exprs)
+
+
+def global_sims(s1, s23, cand, jobs=4, chunk=5_000_000):
+    """Name / address token-set similarity for ALL candidate pairs (cheap), so candidate-side
+    competition ("how many S1s have this exact name?") can be computed over every competitor."""
+    n1, n2 = s1["name_core"], s23["name_core"]
+    a1, a2 = s1["addr_clean"], s23["addr_clean"]
+    qi_all, ci_all = cand["qi"].to_numpy(), cand["ci"].to_numpy()
+    ns, as_ = [], []
+    for s in range(0, len(qi_all), chunk):
+        qi, ci = qi_all[s:s + chunk], ci_all[s:s + chunk]
+        ns.append(_cp(n1.gather(qi).to_list(), n2.gather(ci).to_list(), fuzz.token_set_ratio, jobs))
+        bb = a2.gather(ci)
+        av = _cp(a1.gather(qi).to_list(), bb.to_list(), fuzz.token_set_ratio, jobs)
+        as_.append(np.where((bb == "").to_numpy(), -1, av).astype(np.float32))
+    return np.concatenate(ns), np.concatenate(as_)

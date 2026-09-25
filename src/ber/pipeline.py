@@ -114,6 +114,24 @@ def load_candidates(split, work, caps, keep_qi=None):
         cand = add_second_best(cand, sc, "ci", f"{sc}_margin_c")
         cand = add_second_best(cand, sc, "qi", f"{sc}_margin_q")
     log(split, "candidates", n0, "-> pruned", cand.height)
+    if GLOBAL_SIMS:
+        from .features import global_sims
+        s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=["name_core", "addr_clean"])
+        s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["name_core", "addr_clean"])
+        gn, ga = global_sims(s1, s23, cand)
+        del s1, s23
+        cand = cand.with_columns(pl.Series("g_name", gn), pl.Series("g_addr", ga))
+        cand = cand.with_columns(
+            pl.col("g_name").rank("ordinal", descending=True).over("ci").cast(pl.Float32).alias("g_name_rank_c"),
+            (pl.col("g_name") >= 90).sum().over("ci").cast(pl.Float32).alias("g_name_twins_c"),
+            (pl.col("g_name") >= 90).sum().over("qi").cast(pl.Float32).alias("g_name_twins_q"),
+            pl.col("g_addr").rank("ordinal", descending=True).over("ci").cast(pl.Float32).alias("g_addr_rank_c"),
+            ((pl.col("g_name") + pl.col("g_addr").clip(0, 100)) / 2).alias("g_mix"))
+        cand = add_second_best(cand, "g_name", "ci", "g_name_margin_c")
+        cand = add_second_best(cand, "g_mix", "ci", "g_mix_margin_c")
+        cand = cand.with_columns(pl.col("g_mix").rank("ordinal", descending=True).over("ci").cast(pl.Float32)
+                                 .alias("g_mix_rank_c"))
+        log(split, "global similarity context added")
     if keep_qi is not None:     # context is computed on ALL pairs first, then rows are restricted
         cand = cand.filter(pl.col("qi").is_in(pl.Series(np.where(keep_qi)[0]).cast(pl.Int32).implode()))
         log(split, "restricted to", cand.height, "pairs")
@@ -121,6 +139,7 @@ def load_candidates(split, work, caps, keep_qi=None):
 
 
 _SPACES = {}
+GLOBAL_SIMS = False   # set by run.py --global_sims
 
 
 def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_000):
