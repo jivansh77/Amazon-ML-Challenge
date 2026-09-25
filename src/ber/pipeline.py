@@ -168,3 +168,21 @@ def decode_f05(pairs, excl=True, beta=0.5, floor=0.02):
     kbest = d.filter(pl.col("_e") == pl.col("_emax")).group_by("s1").agg(pl.col("_k").min().alias("_kb"))
     d = d.join(kbest, on="s1").filter((pl.col("_k") <= pl.col("_kb")) & (pl.col("_emax") > pl.col("_p0")))
     return d.select("s1", "m")
+
+
+def score_context(p):
+    """Context features from stage-1 probabilities p (frame qi, ci, p1) over ALL pairs:
+    how this pair ranks within its S1 and among all S1s competing for the same candidate."""
+    p = p.with_columns(
+        pl.col("p1").rank("ordinal", descending=True).over("qi").cast(pl.Float32).alias("p1_rank_q"),
+        (pl.col("p1") - pl.col("p1").max().over("qi")).alias("p1_gap_q"),
+        pl.col("p1").sum().over("qi").alias("p1_sum_q"),
+        (pl.col("p1") > 0.5).sum().over("qi").cast(pl.Float32).alias("p1_n50_q"),
+        pl.col("p1").rank("ordinal", descending=True).over("ci").cast(pl.Float32).alias("p1_rank_c"),
+        (pl.col("p1") - pl.col("p1").max().over("ci")).alias("p1_gap_c"),
+        pl.col("p1").sum().over("ci").alias("p1_sum_c"),
+        (pl.col("p1") > 0.3).sum().over("ci").cast(pl.Float32).alias("p1_n30_c"),
+    )
+    p = add_second_best(p, "p1", "qi", "p1_margin_q")
+    p = add_second_best(p, "p1", "ci", "p1_margin_c")
+    return p

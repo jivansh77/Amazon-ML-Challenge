@@ -18,7 +18,7 @@ import polars as pl
 from ber.io import find_dataset_dir, read_ground_truth, write_id_lists
 from ber.metric import macro_f05
 from ber.pipeline import (log, stage_normalize, stage_block, stage_dense, load_candidates, iter_pair_tables,
-                          feature_columns, decode, decode_f05)
+                          feature_columns, decode, decode_f05, score_context)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
@@ -32,6 +32,9 @@ ap.add_argument("--splits", default="train,test", help="splits for the norm/bloc
 ap.add_argument("--routes", default="tok,key")
 ap.add_argument("--tok_max_df", type=float, default=0.01)
 ap.add_argument("--key_cap", type=int, default=600)
+ap.add_argument("--stage2", action="store_true", help="two-stage model with stage-1 score context")
+ap.add_argument("--frac_a", type=float, default=0.25, help="stage-2: fraction of train S1 for the stage-1 model")
+ap.add_argument("--frac_b", type=float, default=0.25, help="stage-2: fraction of train S1 for the stage-2 model")
 ap.add_argument("--cap_tok", type=int, default=30, help="keep tok-route candidates with rank <= this")
 ap.add_argument("--cap_key", type=int, default=30)
 ap.add_argument("--cap_dense", type=int, default=30)
@@ -97,38 +100,19 @@ PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_i
 
 CAPS = {"tok": a.cap_tok, "key": a.cap_key, "dense": a.cap_dense}
 
-if "train" in stages:
-    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"])
-    use = (s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy() < a.train_frac * 1000)
-    edges = read_ground_truth(dd)
-    lab = edges.with_columns(pl.lit(1, pl.Int8).alias("y"))
-    cand = load_candidates("train", a.work, CAPS)
-    Xs, ys, vs, vas, cols = [], [], [], [], None
-    for t in iter_pair_tables("train", a.work, cand, s1_filter=use, n_jobs=a.jobs):
-        t = t.join(lab, on=["s1", "m"], how="left").with_columns(
-            pl.col("y").fill_null(0), ((pl.col("s1").hash(13) % 10) == 0).alias("is_val"))
-        cols = cols or feature_columns(t)
-        Xs.append(t.select(cols).to_numpy().astype(np.float32))
-        ys.append(t["y"].to_numpy())
-        vs.append(t["is_val"].to_numpy())
-        vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y"))
-    del cand
-    X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs)
-    del Xs, ys, vs
-    va = pl.concat(vas)
-    log("features", len(cols), "pairs", len(y), "pos", int(y.sum()))
+def fit_lgb(X, y, isv, cols, tag):
     dtr = lgb.Dataset(X[~isv], y[~isv], feature_name=cols, free_raw_data=True)
     dva = lgb.Dataset(X[isv], y[isv], reference=dtr)
     bst = lgb.train(PARAMS, dtr, a.rounds, valid_sets=[dva],
-                    callbacks=[lgb.early_stopping(100), lgb.log_evaluation(100)])
-    bst.save_model(f"{a.work}/model.txt")
-    va = va.with_columns(pl.Series("p", bst.predict(X[isv], num_iteration=bst.best_iteration)))
-    del X, dtr, dva
-    va.write_parquet(f"{a.work}/val_scores.parquet")
-    # evaluation universe: all val S1 ids of the used subset (singletons included)
-    ids = s1.rename({"entity_id": "s1"}).filter(pl.Series(use)).filter((pl.col("s1").hash(13) % 10) == 0)
-    truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
-    rec = va["y"].sum() / truth.height
+                    callbacks=[lgb.early_stopping(100), lgb.log_evaluation(200)])
+    bst.save_model(f"{a.work}/{tag}.txt")
+    imp = sorted(zip(cols, bst.feature_importance("gain")), key=lambda x: -x[1])
+    log(tag, "best_iter", bst.best_iteration, "top features", [(c, int(g)) for c, g in imp[:25]])
+    return bst
+
+
+def tune_decoder(va, ids, truth):
+    rec = va["y"].sum() / max(truth.height, 1)
     log("val blocking recall", round(rec, 4), "oracle f05",
         round(macro_f05(va.filter(pl.col("y") == 1), truth, ids)["f05"], 4))
     best = (0, None)
@@ -145,22 +129,111 @@ if "train" in stages:
             best = (r["f05"], ("f05", excl))
     thr, excl = best[1]
     pv = decode_f05(va, excl) if thr == "f05" else decode(va, thr, excl)
-    r = macro_f05(pv, truth, ids, by="country")
-    log("BEST", best, r)
-    imp = sorted(zip(cols, bst.feature_importance("gain")), key=lambda x: -x[1])
-    log("top features", [(c, int(g)) for c, g in imp[:30]])
-    json.dump({"thr": thr, "excl": excl, "cols": cols, "val_f05": best[0], "best_iter": bst.best_iteration,
-               "caps": CAPS}, open(f"{a.work}/cfg.json", "w"))
+    log("BEST", best, macro_f05(pv, truth, ids, by="country"))
+    return best
+
+
+def is_val(col):
+    return (pl.col(col).hash(13) % 10) == 0
+
+
+if "train" in stages:
+    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"])
+    h = s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy()
+    edges = read_ground_truth(dd)
+    lab = edges.with_columns(pl.lit(1, pl.Int8).alias("y"))
+    cand = load_candidates("train", a.work, CAPS)
+    ids_all = s1.rename({"entity_id": "s1"})
+    if not a.stage2:
+        use = h < a.train_frac * 1000
+        Xs, ys, vs, vas, cols = [], [], [], [], None
+        for t in iter_pair_tables("train", a.work, cand, s1_filter=use, n_jobs=a.jobs):
+            t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
+            cols = cols or feature_columns(t)
+            Xs.append(t.select(cols).to_numpy().astype(np.float32)); ys.append(t["y"].to_numpy())
+            vs.append(t["is_val"].to_numpy()); vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y"))
+        del cand
+        X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs); del Xs, ys, vs
+        log("features", len(cols), "pairs", len(y), "pos", int(y.sum()))
+        bst = fit_lgb(X, y, isv, cols, "model")
+        va = pl.concat(vas).with_columns(pl.Series("p", bst.predict(X[isv], num_iteration=bst.best_iteration)))
+        del X
+        ids = ids_all.filter(pl.Series(use)).filter(is_val("s1"))
+        cfg = {"cols": cols, "best_iter": bst.best_iteration, "stage2": False}
+    else:
+        A = h < a.frac_a * 1000
+        B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
+        # stage 1: fit on A
+        Xs, ys, vs, cols = [], [], [], None
+        for t in iter_pair_tables("train", a.work, cand, s1_filter=A, n_jobs=a.jobs):
+            t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
+            cols = cols or feature_columns(t)
+            Xs.append(t.select(cols).to_numpy().astype(np.float32)); ys.append(t["y"].to_numpy()); vs.append(t["is_val"].to_numpy())
+        X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs); del Xs, ys, vs
+        log("stage1 features", len(cols), "pairs", len(y), "pos", int(y.sum()))
+        b1 = fit_lgb(X, y, isv, cols, "model1")
+        del X
+        # stage-1 scores for every non-A pair (out-of-sample); keep B feature rows for stage 2
+        ps, Bt = [], []
+        for t in iter_pair_tables("train", a.work, cand, s1_filter=~A, n_jobs=a.jobs):
+            t = t.with_columns(pl.Series("p1", b1.predict(t.select(cols).to_numpy().astype(np.float32),
+                                                         num_iteration=b1.best_iteration)).cast(pl.Float32))
+            ps.append(t.select("qi", "ci", "p1"))
+            Bt.append(t.filter(pl.col("qi").is_in(
+                pl.Series(np.where(B)[0]).cast(pl.Int32).implode())))
+        # A pairs: in-sample stage-1 scores (only used as competitors in the context features)
+        for t in iter_pair_tables("train", a.work, cand, s1_filter=A, n_jobs=a.jobs):
+            ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", b1.predict(
+                t.select(cols).to_numpy().astype(np.float32), num_iteration=b1.best_iteration)).cast(pl.Float32)))
+        del cand
+        ctx = score_context(pl.concat(ps)); del ps
+        tb = pl.concat(Bt).drop("p1").join(ctx, on=["qi", "ci"], how="left"); del Bt, ctx
+        tb = tb.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
+        cols2 = feature_columns(tb)
+        X = tb.select(cols2).to_numpy().astype(np.float32)
+        y, isv = tb["y"].to_numpy(), tb["is_val"].to_numpy()
+        log("stage2 features", len(cols2), "pairs", len(y), "pos", int(y.sum()))
+        bst = fit_lgb(X, y, isv, cols2, "model")
+        va = tb.filter(pl.col("is_val")).select("s1", "m", "y").with_columns(
+            pl.Series("p", bst.predict(X[isv], num_iteration=bst.best_iteration)))
+        # stage-1-only score on the same validation rows, for comparison
+        va1 = tb.filter(pl.col("is_val")).select("s1", "m", "y", pl.col("p1").alias("p"))
+        del X, tb
+        ids = ids_all.filter(pl.Series(B)).filter(is_val("s1"))
+        truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
+        log("---- stage-1 only on stage-2 validation rows ----")
+        tune_decoder(va1, ids, truth)
+        cfg = {"cols": cols2, "cols1": cols, "best_iter": bst.best_iteration, "best_iter1": b1.best_iteration,
+               "stage2": True}
+    va.write_parquet(f"{a.work}/val_scores.parquet")
+    truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
+    log("---- final model ----")
+    best = tune_decoder(va, ids, truth)
+    cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS})
+    json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
 if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
     bst = lgb.Booster(model_file=f"{a.work}/model.txt")
     cand = load_candidates("test", a.work, cfg.get("caps", CAPS))
     parts = []
-    for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
-        p = bst.predict(t.select(cfg["cols"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter"])
-        parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
-    del cand
+    if not cfg.get("stage2"):
+        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
+            p = bst.predict(t.select(cfg["cols"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter"])
+            parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
+        del cand
+    else:
+        b1 = lgb.Booster(model_file=f"{a.work}/model1.txt")
+        ps = []
+        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
+            ps.append(t.select("qi", "ci").with_columns(pl.Series("p1", b1.predict(
+                t.select(cfg["cols1"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter1"])).cast(pl.Float32)))
+        ctx = score_context(pl.concat(ps)); del ps
+        for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
+            t = t.join(ctx, on=["qi", "ci"], how="left")
+            p = bst.predict(t.select(cfg["cols"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter"])
+            parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
+        del cand, ctx
     tab = pl.concat(parts)
     tab.write_parquet(f"{a.work}/test_scores.parquet")
     pred = decode_f05(tab, cfg["excl"]) if cfg["thr"] == "f05" else decode(tab, cfg["thr"], cfg["excl"])
