@@ -21,6 +21,20 @@ Recall is the share of the 7,638,365 true (S1, S2/S3) pairs that land in the can
 | TF-IDF 15 + dense 15 | 0.9761 | 24.8 |
 | TF-IDF 10 + dense 10 | 0.9697 | 15.5 |
 
+### Reverse dense route: top S1s for each S2/S3 record (`ber-dense2`)
+
+This route targets name-only S2/S3 records whose generic name ties with many lookalikes in the forward direction.
+
+| Candidates | Recall | Pairs per S1 |
+|---|---|---|
+| Reverse top 1 alone | 0.957 | ~4.7 |
+| Forward dense top 20 | 0.953 | 20 |
+| Forward top 20 + reverse top 1 | 0.9671 | 20.3 |
+| Forward top 20 + reverse top 2 | 0.9713 | 22.7 |
+| Forward top 20 + reverse top 3 | 0.9739 | 25.8 |
+
+The first run was killed (out of memory) inside the recall report, after all files had been written. Kaggle keeps no outputs from failed runs, so the kernel wrapper now always exits cleanly.
+
 ### What the TF-IDF route misses (362k pairs)
 
 The misses are 61% India. Among them:
