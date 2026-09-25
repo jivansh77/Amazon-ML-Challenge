@@ -17,7 +17,7 @@ ap.add_argument("--bs", type=int, default=128); ap.add_argument("--maxlen", type
 a = ap.parse_args()
 os.makedirs(a.work, exist_ok=True)
 root = [d for d in glob.glob(a.ce_data, recursive=True) if os.path.isdir(d)]
-f = lambda name: glob.glob(os.path.join(root[0], "**", name), recursive=True)[0]
+f = lambda name: (glob.glob(os.path.join(root[0], "**", name), recursive=True) or [None])[0]
 print("ce data:", root[0], flush=True)
 if a.model_dir and not os.path.isdir(a.model_dir):     # allow a glob (mounted kernel output)
     a.model_dir = [d for d in glob.glob(a.model_dir, recursive=True) if os.path.isdir(d)][0]
@@ -62,6 +62,8 @@ def score(df, bs=512):
 
 for name in ["val_band", "test_band"]:
     t = time.time()
+    if f(f"{name}.parquet") is None:
+        continue
     d = pl.read_parquet(f(f"{name}.parquet"))
     d = d.with_columns(pl.Series("ce", score(d))).drop("a", "b")
     d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")
