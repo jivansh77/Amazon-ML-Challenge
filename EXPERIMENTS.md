@@ -369,3 +369,33 @@ Each LB difference is the net value of one France band.
 5. dec_ce_fr85
 
 dec_ce_frwords (words only) is kept for 27 Sep if needed.
+
+## French words, v2: calibrated, not halved (26 Sep)
+
+On validation the model's response to the learned score of an added word is calibrated and sharply non-linear. For pairs whose candidate adds exactly one word:
+
+| Word score | Pairs | True matches |
+|---|---|---|
+| Unknown word (mostly generator typos) | 67k | 88% |
+| (−1, 0] | 29.5k | 76% |
+| (−2, −1] | 5.2k | 66% |
+| (−3, −2] | 577 | 55% |
+| **(−4, −3]** | 6.3k | **3%** |
+| ≤ −4 | 0.7k | 4–11% |
+
+v1 halved the pseudo scores, which put "france" at −2.1, in the ambiguous zone. In confident French pairs "+ france" is ~10% match.
+
+**v2 (`--calib isotonic`):**
+- Run the same pseudo-label recipe on the labelled countries' test pairs (US + India, 5.55M confident pairs).
+- Compare with their training odds word by word (437 words) and fit a monotone map.
+
+| Pseudo score | −8 | −6 | −4 | −3 | −2 | −1 | 0 | +1 |
+|---|---|---|---|---|---|---|---|---|
+| Training scale | −5.16 | −5.07 | −3.45 | −2.56 | −2.35 | −1.30 | −0.79 | +1.07 |
+
+After calibration:
+- "france", "club", "amicale", "musique" → −3.45.
+- "sainte", "lille", "nantes", "ateliers", "ei", "bordeaux" → −5.07.
+- Typos such as "farmacie" → +1.11.
+
+`ber-dec-test3` re-scores test with v2 (CPU kernel).
