@@ -59,7 +59,8 @@ if a.reuse:
     import glob
     for pat in a.reuse.split(","):
         for d in glob.glob(pat, recursive=True):
-            for f in glob.glob(os.path.join(d, "*.parquet")):
+            for f in (glob.glob(os.path.join(d, "*.parquet")) + glob.glob(os.path.join(d, "model*.txt")) +
+                      glob.glob(os.path.join(d, "model*.json")) + glob.glob(os.path.join(d, "cfg.json"))):
                 dst = os.path.join(a.work, os.path.basename(f))
                 if not os.path.exists(dst):
                     os.symlink(f, dst)
@@ -249,7 +250,9 @@ if "train" in stages:
             del X
         pv = np.concatenate([predict(bst, x, best_iter) for x in Xva])
         va = pl.concat(vas).with_columns(pl.Series("p", pv))
-        del Xva
+        del Xva, yva
+        Xtr = ytr = wtr = None     # free training matrices before the test stage
+        import gc; gc.collect()
         ids = ids_all.filter(pl.Series(use)).filter(is_val("s1"))
         cfg = {"cols": cols, "best_iter": best_iter, "stage2": False, "model": a.model}
     else:
