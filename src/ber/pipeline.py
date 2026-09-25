@@ -272,3 +272,52 @@ def add_triangle(split, work, ctx, jobs=4, chunk=5_000_000):
     tn[~has] = -1; ta[~has] = -1
     return ctx.with_columns(pl.Series("tri_name", tn), pl.Series("tri_addr", ta),
                             t["tri_anchor_p"].cast(pl.Float32).fill_null(-1).alias("tri_anchor_p"))
+
+
+PRIOR_EDGES = [0.5, 0.7, 0.8, 0.85, 0.9, 0.93, 0.95, 0.97, 0.98, 0.99, 1.01]
+
+
+def prior_thresholds(va, te, tr_country, te_country, min_prec=0.78):
+    """Per-country thresholds corrected for the test set's decoy density.
+
+    va: validation (s1, m, y, p); te: test (s1, m, p); *_country: frames (s1, country).
+    Expected TRUE matches per S1 in each probability band come from validation (countries without labels
+    use the average of the labelled ones); dividing by the observed test pairs per S1 in the band estimates
+    each band's precision on test. A pair helps macro F0.5 only above ~F*/(1+beta^2) ~ 0.78, so each
+    country's threshold is the lowest band edge above which every band clears min_prec.
+    Returns ({country: threshold}, table of estimated precisions)."""
+    E = PRIOR_EDGES
+
+    def band(c):
+        e = pl.lit(None, pl.Float64)
+        for lo, hi in zip(E[:-1], E[1:]):
+            e = pl.when((pl.col(c) >= lo) & (pl.col(c) < hi)).then(pl.lit(lo)).otherwise(e)
+        return e.alias("band")
+    nv = va.select("s1").unique().join(tr_country, on="s1").group_by("country").len().rename({"len": "n"})
+    vt = (va.filter(pl.col("p") >= E[0]).join(tr_country, on="s1").with_columns(band("p"))
+          .group_by("country", "band").agg(pl.col("y").sum().alias("tp")).join(nv, on="country")
+          .with_columns((pl.col("tp") / pl.col("n")).alias("tp_per_s1")))
+    avg = vt.group_by("band").agg(pl.col("tp_per_s1").mean().alias("tp_avg"))
+    nt = te_country.group_by("country").len().rename({"len": "n"})
+    tt = (te.filter(pl.col("p") >= E[0]).join(te_country, on="s1").with_columns(band("p"))
+          .group_by("country", "band").agg(pl.len().alias("pairs")).join(nt, on="country")
+          .with_columns((pl.col("pairs") / pl.col("n")).alias("test_per_s1")))
+    est = (tt.join(vt.select("country", "band", "tp_per_s1"), on=["country", "band"], how="left").join(avg, on="band")
+           .with_columns((pl.coalesce("tp_per_s1", "tp_avg") / pl.col("test_per_s1")).clip(0, 1).alias("prec"))
+           .sort("country", "band", descending=[False, True]))
+    thr = {}
+    for c in est["country"].unique().to_list():
+        t = 0.99
+        for b, pr in est.filter(pl.col("country") == c).select("band", "prec").iter_rows():
+            if pr < min_prec:
+                break
+            t = b
+        thr[c] = t
+    return thr, est
+
+
+def decode_by_country(pairs, thr, country, default=0.9):
+    """Exclusivity (each record keeps its best S1), then the S1's country threshold."""
+    d = pairs.filter(pl.col("p") == pl.col("p").max().over("m")).join(country, on="s1")
+    d = d.filter(pl.col("p") >= pl.col("country").replace_strict(thr, default=default, return_dtype=pl.Float64))
+    return d.select("s1", "m")

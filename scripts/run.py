@@ -52,6 +52,8 @@ ap.add_argument("--drop_s1", type=float, default=0.0,
                 help="train/validate with this fraction of S1 removed (orphaned S2/S3 records, test-like density)")
 ap.add_argument("--s2_topk", type=int, default=0, help="stage 2 only scores the stage-1 top-k per S1 (0 = all)")
 ap.add_argument("--s2_minp", type=float, default=0.0, help="stage 2 only scores pairs with stage-1 p >= this")
+ap.add_argument("--prior_thr", action="store_true",
+                help="test stage: per-country thresholds corrected for the test decoy density (needs val_scores)")
 ap.add_argument("--decoy_feats", action="store_true", help="decoy-signature features (extra/missing name words, signed house-number shift)")
 ap.add_argument("--dup_decoys", action="store_true", help="duplicate near decoy candidates in training (test-like decoy density)")
 ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
@@ -455,7 +457,16 @@ if "test" in stages:
     s23_all = pl.read_parquet(f"{a.work}/test_s23n.parquet", columns=["entity_id"])["entity_id"]
     tab = tab.with_columns(s1_all.gather(tab["qi"]).alias("s1"), s23_all.gather(tab["ci"]).alias("m")).drop("qi", "ci")
     tab.write_parquet(f"{a.work}/test_scores.parquet")
-    pred = decode_f05(tab, cfg["excl"]) if cfg["thr"] == "f05" else decode(tab, cfg["thr"], cfg["excl"])
+    if a.prior_thr and os.path.exists(f"{a.work}/val_scores.parquet"):
+        from ber.pipeline import prior_thresholds, decode_by_country
+        trc = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
+        tec = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
+        thr_c, est = prior_thresholds(pl.read_parquet(f"{a.work}/val_scores.parquet"), tab, trc, tec)
+        log("prior-corrected per-country thresholds:", thr_c)
+        log(est.select("country", "band", pl.col("prec").round(3)).pivot(on="country", index="band", values="prec").sort("band"))
+        pred = decode_by_country(tab, thr_c, tec)
+    else:
+        pred = decode_f05(tab, cfg["excl"]) if cfg["thr"] == "f05" else decode(tab, cfg["thr"], cfg["excl"])
     s1_ids = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id"])["entity_id"].to_list()
     write_id_lists(f"{out}/candidate_pairs.tsv", s1_ids, tab.select("s1", "m"), "candidate_entity_ids")
     write_id_lists(f"{out}/matching_results.tsv", s1_ids, pred, "matched_entity_ids")
