@@ -45,6 +45,8 @@ ap.add_argument("--reuse", default=None, help="dir with cached *_s1n/_s23n/_cand
 ap.add_argument("--train_frac", type=float, default=1.0, help="fraction of train S1 used to fit the model")
 ap.add_argument("--jobs", type=int, default=4)
 ap.add_argument("--rounds", type=int, default=1500)
+ap.add_argument("--neg_rate", type=float, default=1.0,
+                help="keep this fraction of EASY training negatives (weighted 1/rate); hard negatives always kept")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
 a = ap.parse_args()
@@ -117,8 +119,8 @@ PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_i
 
 CAPS = {"tok": a.cap_tok, "key": a.cap_key, "dense": a.cap_dense, "rdense": a.cap_rdense}
 
-def fit_lgb(X, y, isv, cols, tag):
-    dtr = lgb.Dataset(X[~isv], y[~isv], feature_name=cols, free_raw_data=True)
+def fit_lgb(X, y, isv, cols, tag, w=None):
+    dtr = lgb.Dataset(X[~isv], y[~isv], weight=None if w is None else w[~isv], feature_name=cols, free_raw_data=True)
     dva = lgb.Dataset(X[isv], y[isv], reference=dtr)
     bst = lgb.train(PARAMS, dtr, a.rounds, valid_sets=[dva],
                     callbacks=[lgb.early_stopping(100), lgb.log_evaluation(200)])
@@ -137,7 +139,7 @@ XGB_PARAMS = dict(objective="binary:logistic", eval_metric="logloss", tree_metho
 
 class _Batches:
     """xgboost.DataIter over lists of (X, y) chunks, so the full matrix never exists in host RAM."""
-    def __new__(cls, Xs, ys, cols):
+    def __new__(cls, Xs, ys, cols, ws=None):
         import xgboost as xgb
 
         class It(xgb.DataIter):
@@ -148,7 +150,8 @@ class _Batches:
             def next(self, input_data):
                 if self.i == len(Xs):
                     return False
-                input_data(data=Xs[self.i], label=ys[self.i], feature_names=cols)
+                input_data(data=Xs[self.i], label=ys[self.i], feature_names=cols,
+                           weight=None if ws is None else ws[self.i])
                 self.i += 1
                 return True
 
@@ -157,9 +160,9 @@ class _Batches:
         return It()
 
 
-def fit_xgb(Xtr, ytr, Xva, yva, cols, tag):
+def fit_xgb(Xtr, ytr, Xva, yva, cols, tag, wtr=None):
     import xgboost as xgb
-    dtr = xgb.QuantileDMatrix(_Batches(Xtr, ytr, cols), max_bin=XGB_PARAMS["max_bin"])
+    dtr = xgb.QuantileDMatrix(_Batches(Xtr, ytr, cols, wtr), max_bin=XGB_PARAMS["max_bin"])
     dva = xgb.QuantileDMatrix(_Batches(Xva, yva, cols), ref=dtr)
     bst = xgb.train(XGB_PARAMS, dtr, num_boost_round=a.rounds, evals=[(dva, "val")],
                     early_stopping_rounds=100, verbose_eval=200)
@@ -210,26 +213,38 @@ if "train" in stages:
     if not a.stage2:
         use = h < a.train_frac * 1000
         cand = load_candidates("train", a.work, CAPS, keep_qi=use)
-        Xtr, ytr, Xva, yva, vas, cols = [], [], [], [], [], None
+        Xtr, ytr, wtr, Xva, yva, vas, cols = [], [], [], [], [], [], None
+        rng = np.random.default_rng(0)
         for t in iter_pair_tables("train", a.work, cand, s1_filter=use, n_jobs=a.jobs):
             t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
             cols = cols or feature_columns(t)
-            for flag, XL, YL in ((False, Xtr, ytr), (True, Xva, yva)):
-                tt = t.filter(pl.col("is_val") == flag)
-                XL.append(tt.select(cols).to_numpy().astype(np.float32)); YL.append(tt["y"].to_numpy().astype(np.float32))
+            tr = t.filter(~pl.col("is_val"))
+            w = np.ones(tr.height, np.float32)
+            if a.neg_rate < 1:
+                # hard negatives: near the top of this S1's list by any score; everything else is "easy"
+                hard = (tr["y"] == 1) | (tr["sim_mix_rank_q"] <= 5) | (tr["tok_score_rank_q"] <= 5) \
+                       | ((tr["dense_score_rank_q"] <= 5) if "dense_score_rank_q" in tr.columns else False)
+                keep = hard.to_numpy() | (rng.random(tr.height) < a.neg_rate)
+                w = np.where(hard.to_numpy(), 1.0, 1.0 / a.neg_rate).astype(np.float32)[keep]
+                tr = tr.filter(pl.Series(keep))
+            Xtr.append(tr.select(cols).to_numpy().astype(np.float32)); ytr.append(tr["y"].to_numpy().astype(np.float32))
+            wtr.append(w)
+            tv = t.filter(pl.col("is_val"))
+            Xva.append(tv.select(cols).to_numpy().astype(np.float32)); yva.append(tv["y"].to_numpy().astype(np.float32))
             vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y"))
             del t
         del cand
-        log("features", len(cols), "train pairs", sum(map(len, ytr)), "val pairs", sum(map(len, yva)),
+        log("features", len(cols), "train pairs (after neg sampling)", sum(map(len, ytr)), "val pairs", sum(map(len, yva)),
             "pos", int(sum(y.sum() for y in ytr)))
         if a.model == "xgb":
-            bst = fit_xgb(Xtr, ytr, Xva, yva, cols, "model")
+            bst = fit_xgb(Xtr, ytr, Xva, yva, cols, "model", wtr)
             best_iter = bst.best_iteration
         else:
             X = np.concatenate(Xtr + Xva); y = np.concatenate(ytr + yva)
+            w = np.concatenate(wtr + [np.ones(len(v), np.float32) for v in yva])
             isv = np.zeros(len(y), bool); isv[sum(map(len, ytr)):] = True
             del Xtr
-            bst = fit_lgb(X, y, isv, cols, "model")
+            bst = fit_lgb(X, y, isv, cols, "model", w)
             best_iter = bst.best_iteration
             del X
         pv = np.concatenate([predict(bst, x, best_iter) for x in Xva])
