@@ -90,13 +90,17 @@ ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("
           ("rdense", "rdense_score", "rdense_rank")]
 
 
-def load_candidates(split, work, caps, keep_qi=None):
+def load_candidates(split, work, caps, keep_qi=None, drop_qi=None):
     """Union of all available routes, pruned by per-route rank caps, with global context
     features computed on blocking scores (cheap, and identical at train and test time)."""
     cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
     for f in ["dense", "dense_rev"]:
         if os.path.exists(f"{work}/{split}_{f}.parquet"):
             cand = cand.join(pl.read_parquet(f"{work}/{split}_{f}.parquet"), on=["qi", "ci"], how="full", coalesce=True)
+    if drop_qi is not None:
+        # simulate the test density: dropped S1 disappear entirely, so their S2/S3 records become
+        # orphans that compete for the remaining S1 (all context features are computed without them)
+        cand = cand.filter(~pl.col("qi").is_in(pl.Series(np.where(drop_qi)[0]).cast(pl.Int32).implode()))
     keep = pl.lit(False)
     routes = [r for r in ROUTES if r[2] in cand.columns]      # only routes that produced candidates
     for r, sc, rk in routes:

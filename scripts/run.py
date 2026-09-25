@@ -48,6 +48,10 @@ ap.add_argument("--chunk_s1", type=int, default=150_000, help="S1 rows per featu
 ap.add_argument("--rounds", type=int, default=1500)
 ap.add_argument("--neg_rate", type=float, default=1.0,
                 help="keep this fraction of EASY training negatives (weighted 1/rate); hard negatives always kept")
+ap.add_argument("--drop_s1", type=float, default=0.0,
+                help="train/validate with this fraction of S1 removed (orphaned S2/S3 records, test-like density)")
+ap.add_argument("--s2_topk", type=int, default=0, help="stage 2 only scores the stage-1 top-k per S1 (0 = all)")
+ap.add_argument("--s2_minp", type=float, default=0.0, help="stage 2 only scores pairs with stage-1 p >= this")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
 a = ap.parse_args()
@@ -199,7 +203,7 @@ def tune_decoder(va, ids, truth):
         round(macro_f05(va.filter(pl.col("y") == 1), truth, ids)["f05"], 4))
     best = (0, None)
     for excl in [False, True]:
-        for thr in np.arange(0.2, 0.91, 0.05):
+        for thr in list(np.arange(0.2, 0.96, 0.05)) + [0.97, 0.98, 0.99]:
             r = macro_f05(decode(va, thr, excl), truth, ids)
             if r["f05"] > best[0]:
                 best = (r["f05"], (float(thr), excl))
@@ -219,6 +223,17 @@ def is_val(col):
     return (pl.col(col).hash(13) % 10) == 0
 
 
+def s2_filter(ctx):
+    """Stage 1 acts as a learned filter: only its top candidates per S1 go to stage 2 (and into
+    candidate_pairs.tsv)."""
+    m = pl.lit(True)
+    if a.s2_topk:
+        m = m & (pl.col("p1_rank_q") <= a.s2_topk)
+    if a.s2_minp:
+        m = m & (pl.col("p1") >= a.s2_minp)
+    return ctx.filter(m)
+
+
 def collect(split, cand, mask, lab, ctx=None, cols=None, seed=0):
     """Featurise the S1 rows in `mask`; return train/val chunk lists (with easy-negative sampling on
     the training rows only), the validation (s1, m, y[, p1]) frame and the feature columns."""
@@ -227,7 +242,7 @@ def collect(split, cand, mask, lab, ctx=None, cols=None, seed=0):
     for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
         if ctx is not None:
             sub = ctx.filter(pl.col("qi").is_between(t["qi"].min(), t["qi"].max()))
-            t = t.join(sub, on=["qi", "ci"], how="left")
+            t = t.join(sub, on=["qi", "ci"], how="inner")      # rows filtered out by stage 1 are dropped
         t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
         cols = cols or feature_columns(t)
         tr = t.filter(~pl.col("is_val"))
@@ -279,10 +294,14 @@ if "train" in stages:
     h = s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy()
     edges = read_ground_truth(dd)
     lab = edges.with_columns(pl.lit(1, pl.Int8).alias("y"))
-    ids_all = s1.rename({"entity_id": "s1"})
+    drop = (s1.select((pl.col("entity_id").hash(17) % 1000).alias("d"))["d"].to_numpy() < a.drop_s1 * 1000)
+    if a.drop_s1 > 0:
+        log("dropping", int(drop.sum()), "S1 to simulate test density")
+    ids_all = s1.rename({"entity_id": "s1"}).filter(pl.Series(~drop))
+    h = np.where(drop, 10_000, h)      # dropped S1 never enter A / B / use
     if not a.stage2:
         use = h < a.train_frac * 1000
-        cand = load_candidates("train", a.work, CAPS, keep_qi=use)
+        cand = load_candidates("train", a.work, CAPS, keep_qi=use, drop_qi=drop if a.drop_s1 > 0 else None)
         Xtr, ytr, wtr, Xva, yva, vfr, cols = collect("train", cand, use, lab)
         del cand
         bst, best_iter = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model")
@@ -292,12 +311,12 @@ if "train" in stages:
         del Xva, yva
         Xtr = ytr = wtr = None     # free training matrices before the test stage
         import gc; gc.collect()
-        ids = ids_all.filter(pl.Series(use)).filter(is_val("s1"))
+        ids = ids_all.join(s1.rename({"entity_id": "s1"}).filter(pl.Series(use)).select("s1"), on="s1").filter(is_val("s1"))
         cfg = {"cols": cols, "best_iter": best_iter, "stage2": False, "model": a.model}
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
-        cand = load_candidates("train", a.work, CAPS)
+        cand = load_candidates("train", a.work, CAPS, drop_qi=drop if a.drop_s1 > 0 else None)
         # stage 1 on A
         Xtr, ytr, wtr, Xva, yva, _, cols = collect("train", cand, A, lab)
         b1, it1 = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model1")
@@ -305,6 +324,7 @@ if "train" in stages:
         # stage-1 scores for EVERY train pair (A rows are in-sample; they only act as competitors)
         ctx = score_context(score_all("train", cand, b1, cols, it1))
         ctx = ctx.filter(pl.col("qi").is_in(pl.Series(np.where(B)[0]).cast(pl.Int32).implode()))
+        ctx = s2_filter(ctx)
         gc.collect()
         # stage 2 on B
         Xtr, ytr, wtr, Xva, yva, tbv, cols2 = collect("train", cand, B, lab, ctx=ctx, seed=1)
@@ -314,7 +334,7 @@ if "train" in stages:
             pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva])))
         va1 = tbv.select("s1", "m", "y", pl.col("p1").alias("p"))
         Xtr = ytr = wtr = Xva = yva = None; gc.collect()
-        ids = ids_all.filter(pl.Series(B)).filter(is_val("s1"))
+        ids = ids_all.join(s1.rename({"entity_id": "s1"}).filter(pl.Series(B)).select("s1"), on="s1").filter(is_val("s1"))
         truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
         log("---- stage-1 only on stage-2 validation rows ----")
         tune_decoder(va1, ids, truth)
@@ -324,6 +344,7 @@ if "train" in stages:
     log("---- final model ----")
     best = tune_decoder(va, ids, truth)
     cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS,
+                "s2_topk": a.s2_topk, "s2_minp": a.s2_minp,
                 "global_sims": a.global_sims})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
@@ -348,11 +369,12 @@ if "test" in stages:
     else:
         b1 = load_model("model1", a.model)
         ctx = score_context(score_all("test", cand, b1, cfg["cols1"], cfg["best_iter1"]))
-        ctx = ctx.sort("qi")
+        a.s2_topk, a.s2_minp = cfg.get("s2_topk", 0), cfg.get("s2_minp", 0.0)
+        ctx = s2_filter(ctx).sort("qi")
         qs = ctx["qi"].to_numpy()
         for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
             lo, hi = np.searchsorted(qs, [t["qi"].min(), t["qi"].max() + 1])     # this chunk's slice only
-            t = t.join(ctx.slice(lo, hi - lo), on=["qi", "ci"], how="left")
+            t = t.join(ctx.slice(lo, hi - lo), on=["qi", "ci"], how="inner")
             p = predict(bst, t.select(cfg["cols"]).to_numpy().astype(np.float32), cfg["best_iter"])
             parts.append(t.select("qi", "ci").with_columns(pl.Series("p", p).cast(pl.Float32)))
             del t, p; gc.collect()
