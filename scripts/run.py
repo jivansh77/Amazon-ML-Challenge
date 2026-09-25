@@ -348,6 +348,27 @@ if "train" in stages:
                 "global_sims": a.global_sims})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
+if "dump" in stages:
+    # feature matrices for offline model comparison (e.g. CatBoost vs XGBoost on Colab)
+    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"])
+    h = s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy()
+    drop = (s1.select((pl.col("entity_id").hash(17) % 1000).alias("d"))["d"].to_numpy() < a.drop_s1 * 1000)
+    use = (h < a.train_frac * 1000) & ~drop
+    edges = read_ground_truth(dd)
+    lab = edges.with_columns(pl.lit(1, pl.Int8).alias("y"))
+    cand = load_candidates("train", a.work, CAPS, keep_qi=use, drop_qi=drop if a.drop_s1 > 0 else None)
+    Xtr, ytr, wtr, Xva, yva, vfr, cols = collect("train", cand, use, lab)
+    del cand
+    D = f"{a.work}/dump"; os.makedirs(D, exist_ok=True)
+    pl.DataFrame(np.concatenate(Xtr), schema=cols).with_columns(pl.Series("y", np.concatenate(ytr)),
+        pl.Series("w", np.concatenate(wtr))).write_parquet(f"{D}/train.parquet")
+    pl.DataFrame(np.concatenate(Xva), schema=cols).with_columns(pl.Series("y", np.concatenate(yva)),
+        vfr["s1"], vfr["m"]).write_parquet(f"{D}/val.parquet")
+    ids = s1.rename({"entity_id": "s1"}).filter(pl.Series(use)).filter(is_val("s1"))
+    ids.write_parquet(f"{D}/val_ids.parquet")
+    edges.filter(pl.col("s1").is_in(ids["s1"].implode())).write_parquet(f"{D}/val_truth.parquet")
+    log("dumped", D, os.listdir(D))
+
 if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
     a.model = cfg.get("model", "lgb")
