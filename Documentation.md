@@ -57,11 +57,21 @@ A decoy typically adds a qualifier word to the S1 name:
 
 The house number usually shifts upward by a small step.
 
-**Train/test shift.**
-- Test has more records per S1 (5.8 vs 4.7), so the uncertain score bands hold more decoys on test than on validation.
-- For US and India this is mild (+15% pairs in the 0.3–0.9 band).
-- For **France** the band is **2.3× denser** than for US/India, and the best-vs-second margin is half as large.
-- The public leaderboard is therefore precision-limited. A model's validation F0.5 over-states its test score by ~0.008–0.01, and most of that gap is France.
+**Train/test shift.** Test has more S2/S3 records per S1 (5.5–5.8 vs 4.7). The shift that matters is in the scores, and it sits almost entirely in France.
+
+Pairs per S1 kept after exclusivity, by score band:
+
+| | ≥ 0.99 | 0.70–0.99 |
+|---|---|---|
+| US test | 3.35 | ≈ validation's true matches, band by band |
+| India test | 3.34 | ≈ validation's true matches, band by band |
+| **France test** | **3.08** | **about 2×** |
+
+US/India also have only ~15% more pairs in the raw 0.3–0.9 band.
+
+- France's best-vs-second margin is half that of the US.
+- A leaderboard pair confirms the cost: raising France's threshold from 0.90 to 0.97 gained +0.0027. The removed French pairs were only ~20% correct.
+- The leaderboard is therefore precision-limited in France. A validation score over-states the leaderboard by ~0.008, and most of that gap is France.
 
 ### 2.2 Solution Strategy
 
@@ -140,13 +150,23 @@ Text normalisation before blocking and matching:
    - The expected true matches per S1 come from validation. France, which has no labels, uses the US/India average.
    - They are divided by the observed test pairs per S1 in that band. The result estimates the band's precision on test.
    - A pair improves macro F0.5 only if its precision exceeds ≈ F*/(1+β²) ≈ 0.78. Each country's threshold is the lowest band edge above which every band clears 0.78.
-   - Result: US 0.80, India 0.85, France 0.97. Validation alone would pick 0.75–0.80 everywhere.
+   - Result: US 0.80, India 0.80–0.85, France 0.97. Validation alone would pick 0.75–0.80 everywhere.
+3. **Cross-check with a label-shift estimate.** Calibrate validation scores (isotonic), run EM on each country's test pair prior (Saerens et al.), and find where the corrected probability reaches 0.78.
+   - It agrees for US/India (~0.74–0.78).
+   - It suggests a lower France threshold (~0.84).
+   - The two estimators assume different things about the unlabelled country. The France threshold was therefore settled with public-leaderboard probes that change only French predictions (0.85 / 0.93 / 0.97 / 0.99).
 
 **Transductive decoy words for unlabelled countries** (`fit_pseudo_odds.py`):
 1. Confident test predictions (blended p ≥ 0.99 as match, ≤ 0.05 as non-match) serve as labels for France. The same word log-odds are fitted on near-duplicate names.
 2. We keep the 101 words the training odds do not know and halve their scores (on US test, the same procedure reproduces the training scores with correlation 0.69 at about 2× magnitude). Test is then re-scored.
 3. The words found are exactly the French decoy qualifiers: sainte, ateliers, a city name (lille, nantes, bordeaux, calais), jean, ei, departemental, residence, ehpad, musique, maison, france…
 4. Generator typos (farmacie, clbu, teatre) come out as match-like.
+5. **The effect on France:** 23k "+ France" lookalikes leave the candidate set, e.g. "club projets" vs "club projets france" goes 0.99 → 0.02. The words are applied to French S1 only; US/India scores are unchanged.
+
+**Cross-encoder adapted to France** (self-training, `ce_data.py --parts pseudo` + `ce_train.py --init_dir`):
+- The cross-encoder continues training for 30 minutes on 300k confident French test pairs (50/50) plus 13% of its original training pairs, at lr 2e-5.
+- Validation AUC is unchanged (0.938), so there is no damage to US/India.
+- On France it learns to reject swapped category words at the same address ("Biserica Loisirs" vs "Biserica Fetes"), the "+ Et Fils" branches, and same-name records at a different street.
 
 ---
 
@@ -173,6 +193,35 @@ Text normalisation before blocking and matching:
   - Heavy abbreviations or initials.
   - Empty-address name-only records with generic names (the largest blocking miss: 24% of TF-IDF misses).
   - Indic-script names without a dictionary entry.
+- **Where the validation loss sits** (final US/India validation, 1 − F0.5 = 0.0114):
+
+| Error type | Share of the loss | Note |
+|---|---|---|
+| S1 with some matches found and some missed | 71% | 46% of the missed pairs never reached the candidate set |
+| Matched S1 predicted empty | 16% | |
+| Wrong merges on S1 that have matches | 11% | |
+| Wrong merges on singletons | 2% | |
+
+  The final system is recall-limited on US/India and precision-limited on France.
+
+**What did not work** (each measured, then dropped):
+
+| Idea | Result |
+|---|---|
+| Rare-key hash blocking | 0.92 recall @30 on dev; ran out of memory at scale |
+| Char-3-gram TF-IDF | 0.70 recall on dev |
+| Absolute document-frequency caps | Destroy recall |
+| Triangle-consistency features (candidate vs the S1's anchor match) | 0.98302 vs 0.98297 |
+| Test-density simulation by dropping 19% of S1 | 0.9830 vs 0.9837 |
+| Decoy duplication (virtual copies of decoy records) | See below |
+| CatBoost / random forest / blends with XGBoost | ≤ XGBoost alone |
+| Expected-F0.5 decoder on the LB | 0.970 vs 0.973 for a plain threshold. It trusts validation calibration, which the test prior shift breaks |
+| Stage-3 stacker on the model + CE scores | +0.0003 on validation; not worth the complexity |
+
+**Decoy duplication in detail:**
+- Virtual copies were made only of records that match no S1. A twin therefore identified a decoy, which leaks the label.
+- It looked +0.0016 better on validation.
+- On test it matched 35k S1 that the base model rejects: only 0.9% of S1 predicted empty, against 5.6% singletons. Never submitted.
 
 ---
 
