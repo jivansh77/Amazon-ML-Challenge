@@ -229,3 +229,50 @@ The saved cross-encoder scored the dec model's uncertain band:
 - Per-country thresholds: US 0.80 / India 0.80 / France 0.97.
 - 5.75M pairs (3.32 per S1). Passes the official validator against `candidate_pairs_dec.tsv`.
 - Agreement with other files (share of identical rows): 90.4% with big_percountry (LB 0.9757), 95.2% with dec_percountry.
+
+## France is where the leaderboard gap is (26 Sep analysis)
+
+Per-S1 profile of the dec model's stage-2 pairs:
+
+| | Confident (p ≥ 0.998) | Band (0.02–0.998) | Mid (0.3–0.9) |
+|---|---|---|---|
+| Val US / India | 3.20 / 3.03 | 0.79 / 0.75 | 0.107 / 0.110 |
+| Test US / India | 3.24 / 3.06 | 0.81 / 0.77 | 0.122 / 0.128 |
+| **Test France** | **2.91** | **1.04** | **0.251** |
+
+- US and India test look like validation, with only ~15% more mid-band pairs, spread evenly over S2 and S3.
+- France has 2.3× the mid band.
+- On the LB, moving France from thr 0.90 to 0.97 (and India 0.90 → 0.85) gained +0.0027. That means France's [0.90, 0.97) pairs were mostly wrong.
+
+**Why France:** the decoy-word odds are learned on US/India labels. French qualifiers score 0 ("unknown word"), so French lookalike branches stay uncertain.
+
+| Pairs where the candidate ADDS the word | Pairs | Confident + | Confident − | Uncertain |
+|---|---|---|---|---|
+| "france" | 36.5k | 2.6k | 24.7k | 9.1k |
+| "sainte" | 990 | 0 | 630 | 360 |
+| "lille" | 254 | 0 | 239 | 15 |
+
+Other French decoy patterns: a category word swapped at the same address (Comite → Musique, Club → Amicale, Ecole → Lycee), a city name added, and "EI" added.
+
+**Transductive fix (`fit_pseudo_odds.py`, `--odds_extra`):**
+- Confident test predictions (blend ≥ 0.99 / ≤ 0.05) serve as labels, and word log-odds are fitted on near-duplicate names.
+- Sanity check on US test against the training odds for the same words: extra-word correlation 0.69, sign agreement 81% for strong words. Pseudo < −3 implies train < −2 in 97% of words.
+- Magnitudes are ~2× too large (regression slope 0.47), so the French scores are halved.
+- Missing-word odds are unreliable (sign agreement 46%) and are not used.
+- 101 new French extra-words. The most decoy-like: sainte, lille, ateliers, nantes, jean, ei, bordeaux, notre, departemental, pierre, energie, communale, marie, calais, residence, ehpad, musique, maison, sport, france (−2.1 after halving).
+- Match-like words are generator typos: farmacie, clbu, teatre, uion.
+
+`ber-dec-test2` re-scores test with these words.
+
+**Cross-encoder self-training for France (`ber-ce-fr-train`):**
+- Continues the CE from `ber-ce` with lr 2e-5 on 300k confident French test pairs (50/50) plus 290k US/India training pairs.
+- It then scores France's band [0.003, 0.9995).
+
+**Who is right when the stage-2 model and the CE disagree** (clean US/India validation band):
+
+| Case | Pairs | Share that are true matches |
+|---|---|---|
+| p < 0.6 and CE > 0.99 | 944 | 84% |
+| p < 0.3 and CE > 0.99 | 440 | 74% |
+| p > 0.9 and CE < 0.3 | 1362 | 80% |
+| Blend in [0.85, 0.97) | 5776 | 94.6% |

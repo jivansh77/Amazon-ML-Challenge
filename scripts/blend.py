@@ -29,6 +29,9 @@ ap.add_argument("--ce", required=True, help="dir(s) with ce_val.parquet / ce_tes
 ap.add_argument("--out", required=True)
 ap.add_argument("--w", type=float, default=None, help="weight of the stage-2 model (default: best on validation)")
 ap.add_argument("--min_prec", type=float, default=0.78)
+ap.add_argument("--thr", default=None, help="override thresholds, e.g. US=0.8,France=0.95 (others: prior estimate)")
+ap.add_argument("--ce_test_override", default=None,
+                help="cross-encoder test scores that replace the --ce ones for their pairs (e.g. a country-adapted model)")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 dd = find_dataset_dir(a.data)
@@ -59,11 +62,19 @@ for w in grid:
 w = max(res)[1]
 log("blend weight of the stage-2 model:", w)
 
-te = blend(pl.read_parquet(f"{a.work}/test_scores.parquet"), read_ce("ce_test.parquet"), w)
+ct = read_ce("ce_test.parquet")
+if a.ce_test_override:
+    ov = pl.read_parquet(a.ce_test_override, columns=["s1", "m", "ce"])
+    ct = pl.concat([ct.join(ov, on=["s1", "m"], how="anti"), ov])
+    log("cross-encoder scores replaced for", ov.height, "test pairs")
+te = blend(pl.read_parquet(f"{a.work}/test_scores.parquet"), ct, w)
 trc = read_source(os.path.join(dd, "train", "train_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
 tec = read_source(os.path.join(dd, "test", "test_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
 thr, est = prior_thresholds(blend(va, cv, w), te, trc, tec, min_prec=a.min_prec)
-log("per-country thresholds:", thr)
+log("per-country thresholds (prior estimate):", thr)
+if a.thr:
+    thr.update({k: float(v) for k, v in (x.split("=") for x in a.thr.split(","))})
+    log("thresholds used:", thr)
 log(est.select("country", "band", pl.col("prec").round(3)).pivot(on="country", index="band", values="prec").sort("band"))
 pred = decode_by_country(te, thr, tec)
 s1_ids = tec["s1"].to_list()
