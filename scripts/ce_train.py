@@ -35,7 +35,8 @@ if not a.model_dir:
     parts = []
     for item in a.train_mix.split(","):
         name, frac = item.split(":")
-        d = pl.read_parquet(f(name), columns=["a", "b", "y"])
+        path = glob.glob(name, recursive=True)[0] if "/" in name else f(name)     # a path/glob, or a file in --ce_data
+        d = pl.read_parquet(path, columns=["a", "b", "y"])
         parts.append(d.sample(fraction=float(frac), seed=0) if float(frac) < 1 else d)
         print("train file", name, parts[-1].height, "pairs, positive rate", round(parts[-1]["y"].mean(), 3), flush=True)
     tr = pl.concat(parts).sample(fraction=1.0, shuffle=True, seed=2)
