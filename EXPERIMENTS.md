@@ -119,3 +119,28 @@ Setup: single-stage model, 15% of S1, density simulation, negative sampling 0.3;
 | Blend XGB 0.8 / RF 0.2 | 0.97933 | – |
 
 Blending does not help. The errors are systematic (hard decoys), not variance. XGBoost is kept alone.
+
+## Why validation does not transfer to the LB: decoy density (analysis on 25 Sep)
+
+**Train's unmatched S2/S3 records are decoys, not orphans.**
+- 72% of them are very close to an existing S1 (similarity > 0.92), against 91% for true matches.
+- They are deliberately generated near-duplicates.
+
+**Test has about twice as many decoys per S1.**
+- Records per S1: 5.5–5.8 in test vs 4.68 in train. The share of S1s with 6 or more nearby records rises from 30% to about 50%.
+- Confident predictions (p ≥ 0.97) stay at about 3.2–3.3 per S1, the same as validation.
+- Borderline pairs (0.5–0.97) are 40–150% more frequent than on validation, so the precision of each band collapses on test.
+
+**France is the most ambiguous country.**
+- The median best-vs-second-best S1 margin is 0.035, against 0.071 for the US.
+- 49% of France's S1s fall in the < 0.05 margin buckets, against 10% for the US.
+
+**What does not explain the gap:**
+- Re-weighting validation by the ambiguity mix brings the estimate to 0.981, still far above the LB.
+- Weighting decoy false positives 3× does not reproduce the LB ordering.
+- Multi-assigned records: 272 out of 5.9M.
+
+**Prior-shift correction (`scripts/prior_thresholds.py`):**
+- Take TP per S1 per band from validation (France uses the US/India average) and divide by the observed test pairs per S1 in that band. That gives an estimated test precision per band.
+- A band is included when its precision is ≥ 0.78 (≈ F*/(1+β²)).
+- Result on the full-recipe model: **US 0.93, India 0.90, France 0.98**.
