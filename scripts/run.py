@@ -60,6 +60,9 @@ ap.add_argument("--dup_near", type=int, default=10, help="only duplicate decoys 
 ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
+ap.add_argument("--odds_extra", default=None,
+                help="parquet(s) (token, score), comma-separated: extra-word scores for words the training odds "
+                     "do not know (e.g. French words learned from confident test predictions, fit_pseudo_odds.py)")
 a = ap.parse_args()
 os.makedirs(a.work, exist_ok=True)
 out = a.out or os.path.join(a.work, "output")
@@ -258,6 +261,12 @@ def fit_decoy_odds(C, edges):
 def load_decoy_odds():
     import ber.features as bf
     bf.TOK_ODDS = {k: pl.read_parquet(f"{a.work}/tokodds_{k}.parquet") for k in ("extra", "missing")}
+    for path in (a.odds_extra.split(",") if a.odds_extra else []):
+        t = bf.TOK_ODDS["extra"]
+        add = pl.read_parquet(path).select("token", pl.col("score").cast(pl.Float32))
+        add = add.filter(~pl.col("token").is_in(t["token"].implode()))       # the training odds take precedence
+        bf.TOK_ODDS["extra"] = pl.concat([t.select("token", pl.col("score").cast(pl.Float32)), add])
+        log("extra word odds from", path, "+", add.height, "words:", add.sort("score").head(12)["token"].to_list())
 
 
 def s2_filter(ctx):
