@@ -10,7 +10,7 @@ The output is passed to `run.py --stages test --odds_extra`, which re-scores tes
 
     python scripts/fit_pseudo_odds.py --scores work/test_scores.parquet --ce work/ce_test.parquet \
         --s1n work/test_s1n.parquet --s23n work/test_s23n.parquet --train_odds work/tokodds_extra.parquet \
-        --country France --out artifacts/odds_extra_france.parquet
+        --data <dataset_dir> --out work/odds_extra.parquet
 """
 import argparse, os, sys
 import numpy as np
@@ -27,7 +27,8 @@ ap.add_argument("--w", type=float, default=0.6, help="weight of the model in the
 ap.add_argument("--s1n", required=True, help="test Source 1 (normalised parquet with name_core, or raw)")
 ap.add_argument("--s23n", required=True, help="test Source 2+3 (normalised parquet with name_core, or raw); comma-separated ok")
 ap.add_argument("--train_odds", required=True, help="tokodds_extra.parquet learned on training labels")
-ap.add_argument("--country", default="France")
+ap.add_argument("--data", default=None, help="dataset dir: fit every test country absent from the training data")
+ap.add_argument("--country", default=None, help="country (or comma-separated list) to fit; default: see --data")
 ap.add_argument("--hi", type=float, default=0.99)
 ap.add_argument("--lo", type=float, default=0.05)
 ap.add_argument("--min_count", type=int, default=20)
@@ -44,8 +45,16 @@ def names(paths, ids):
     return d.select("entity_id", "name_core")
 
 
+if a.country:
+    countries = a.country.split(",")
+else:     # the open set of countries: every test country that has no training labels
+    from ber.io import find_dataset_dir, read_source
+    dd = find_dataset_dir(a.data)
+    seen = set(read_source(os.path.join(dd, "train", "train_source1.tsv"))["country"].unique().to_list())
+    countries = sorted(set(pl.scan_parquet(a.s1n).select("country").unique().collect()["country"].to_list()) - seen)
+print("countries without training labels:", countries, flush=True)
 te = pl.read_parquet(a.scores, columns=["s1", "m", "p"])
-s1 = pl.scan_parquet(a.s1n).filter(pl.col("country") == a.country).select("entity_id").collect()
+s1 = pl.scan_parquet(a.s1n).filter(pl.col("country").is_in(countries)).select("entity_id").collect()
 te = te.filter(pl.col("s1").is_in(s1["entity_id"].implode()))
 if a.ce:
     lg = lambda c: (pl.col(c).clip(1e-6, 1 - 1e-6) / (1 - pl.col(c).clip(1e-6, 1 - 1e-6))).log()
@@ -55,7 +64,7 @@ if a.ce:
 na = names(a.s1n, te["s1"].unique().implode()).rename({"entity_id": "s1", "name_core": "na"})
 nb = names(a.s23n, te["m"].unique().implode()).rename({"entity_id": "m", "name_core": "nb"})
 d = te.join(na, on="s1").join(nb, on="m").filter((pl.col("p") >= a.hi) | (pl.col("p") <= a.lo))
-print(a.country, "confident pairs:", d.height, "matches:", int((d["p"] >= a.hi).sum()), flush=True)
+print(countries, "confident pairs:", d.height, "matches:", int((d["p"] >= a.hi).sum()), flush=True)
 odds = fit_token_odds(d["na"].to_list(), d["nb"].to_list(), (d["p"] >= a.hi).to_numpy().astype(np.int8),
                       min_count=a.min_count)["extra"]
 known = pl.read_parquet(a.train_odds)["token"].implode()

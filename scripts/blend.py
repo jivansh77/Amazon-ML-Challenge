@@ -24,7 +24,8 @@ from ber.pipeline import decode, decode_by_country, log, prior_thresholds
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
 ap.add_argument("--work", required=True)
-ap.add_argument("--ce", required=True, help="dir with ce_val.parquet / ce_test.parquet")
+ap.add_argument("--ce", required=True, help="dir(s) with ce_val.parquet / ce_test.parquet, comma-separated "
+                                            "(later dirs add the pairs a re-scored band gained)")
 ap.add_argument("--out", required=True)
 ap.add_argument("--w", type=float, default=None, help="weight of the stage-2 model (default: best on validation)")
 ap.add_argument("--min_prec", type=float, default=0.78)
@@ -40,8 +41,13 @@ def blend(df, ce, w):
     return d.with_columns(pl.when(pl.col("ce").is_null()).then(pl.col("p")).otherwise(b).alias("p")).drop("ce")
 
 
+def read_ce(name):
+    paths = [f"{d}/{name}" for d in a.ce.split(",") if os.path.exists(f"{d}/{name}")]
+    return pl.concat([pl.read_parquet(p, columns=["s1", "m", "ce"]) for p in paths]).unique(["s1", "m"], keep="last")
+
+
 va = pl.read_parquet(f"{a.work}/val_scores.parquet")
-cv = pl.read_parquet(f"{a.ce}/ce_val.parquet")
+cv = read_ce("ce_val.parquet")
 ids = va.select("s1").unique()
 truth = read_ground_truth(dd).filter(pl.col("s1").is_in(ids["s1"].implode()))
 grid = [a.w] if a.w is not None else [1.0, 0.8, 0.7, 0.6, 0.5, 0.4]
@@ -53,7 +59,7 @@ for w in grid:
 w = max(res)[1]
 log("blend weight of the stage-2 model:", w)
 
-te = blend(pl.read_parquet(f"{a.work}/test_scores.parquet"), pl.read_parquet(f"{a.ce}/ce_test.parquet"), w)
+te = blend(pl.read_parquet(f"{a.work}/test_scores.parquet"), read_ce("ce_test.parquet"), w)
 trc = read_source(os.path.join(dd, "train", "train_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
 tec = read_source(os.path.join(dd, "test", "test_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
 thr, est = prior_thresholds(blend(va, cv, w), te, trc, tec, min_prec=a.min_prec)
