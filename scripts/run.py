@@ -45,6 +45,7 @@ ap.add_argument("--reuse", default=None, help="dir with cached *_s1n/_s23n/_cand
 ap.add_argument("--train_frac", type=float, default=1.0, help="fraction of train S1 used to fit the model")
 ap.add_argument("--jobs", type=int, default=4)
 ap.add_argument("--rounds", type=int, default=1500)
+ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
 a = ap.parse_args()
 os.makedirs(a.work, exist_ok=True)
 out = a.out or os.path.join(a.work, "output")
@@ -124,6 +125,53 @@ def fit_lgb(X, y, isv, cols, tag):
     return bst
 
 
+import shutil
+XGB_PARAMS = dict(objective="binary:logistic", eval_metric="logloss", tree_method="hist",
+                  device="cuda" if shutil.which("nvidia-smi") else "cpu",
+                  eta=0.08, max_depth=0, grow_policy="lossguide", max_leaves=255, min_child_weight=5,
+                  subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0, max_bin=256)
+
+
+class _Batches:
+    """xgboost.DataIter over lists of (X, y) chunks, so the full matrix never exists in host RAM."""
+    def __new__(cls, Xs, ys, cols):
+        import xgboost as xgb
+
+        class It(xgb.DataIter):
+            def __init__(self):
+                self.i = 0
+                super().__init__()
+
+            def next(self, input_data):
+                if self.i == len(Xs):
+                    return False
+                input_data(data=Xs[self.i], label=ys[self.i], feature_names=cols)
+                self.i += 1
+                return True
+
+            def reset(self):
+                self.i = 0
+        return It()
+
+
+def fit_xgb(Xtr, ytr, Xva, yva, cols, tag):
+    import xgboost as xgb
+    dtr = xgb.QuantileDMatrix(_Batches(Xtr, ytr, cols), max_bin=XGB_PARAMS["max_bin"])
+    dva = xgb.QuantileDMatrix(_Batches(Xva, yva, cols), ref=dtr)
+    bst = xgb.train(XGB_PARAMS, dtr, num_boost_round=a.rounds, evals=[(dva, "val")],
+                    early_stopping_rounds=100, verbose_eval=200)
+    bst.save_model(f"{a.work}/{tag}.json")
+    imp = sorted(bst.get_score(importance_type="total_gain").items(), key=lambda x: -x[1])
+    log(tag, "best_iter", bst.best_iteration, "top features", [(c, int(g)) for c, g in imp[:25]])
+    return bst
+
+
+def predict(model, X, best_iter):
+    if a.model == "xgb" or not hasattr(model, "num_trees"):
+        return model.inplace_predict(X, iteration_range=(0, best_iter + 1))
+    return model.predict(X, num_iteration=best_iter)
+
+
 def tune_decoder(va, ids, truth):
     rec = va["y"].sum() / max(truth.height, 1)
     log("val blocking recall", round(rec, 4), "oracle f05",
@@ -159,20 +207,33 @@ if "train" in stages:
     if not a.stage2:
         use = h < a.train_frac * 1000
         cand = load_candidates("train", a.work, CAPS, keep_qi=use)
-        Xs, ys, vs, vas, cols = [], [], [], [], None
+        Xtr, ytr, Xva, yva, vas, cols = [], [], [], [], [], None
         for t in iter_pair_tables("train", a.work, cand, s1_filter=use, n_jobs=a.jobs):
             t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
             cols = cols or feature_columns(t)
-            Xs.append(t.select(cols).to_numpy().astype(np.float32)); ys.append(t["y"].to_numpy())
-            vs.append(t["is_val"].to_numpy()); vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y"))
+            for flag, XL, YL in ((False, Xtr, ytr), (True, Xva, yva)):
+                tt = t.filter(pl.col("is_val") == flag)
+                XL.append(tt.select(cols).to_numpy().astype(np.float32)); YL.append(tt["y"].to_numpy().astype(np.float32))
+            vas.append(t.filter(pl.col("is_val")).select("s1", "m", "y"))
+            del t
         del cand
-        X, y, isv = np.concatenate(Xs), np.concatenate(ys), np.concatenate(vs); del Xs, ys, vs
-        log("features", len(cols), "pairs", len(y), "pos", int(y.sum()))
-        bst = fit_lgb(X, y, isv, cols, "model")
-        va = pl.concat(vas).with_columns(pl.Series("p", bst.predict(X[isv], num_iteration=bst.best_iteration)))
-        del X
+        log("features", len(cols), "train pairs", sum(map(len, ytr)), "val pairs", sum(map(len, yva)),
+            "pos", int(sum(y.sum() for y in ytr)))
+        if a.model == "xgb":
+            bst = fit_xgb(Xtr, ytr, Xva, yva, cols, "model")
+            best_iter = bst.best_iteration
+        else:
+            X = np.concatenate(Xtr + Xva); y = np.concatenate(ytr + yva)
+            isv = np.zeros(len(y), bool); isv[sum(map(len, ytr)):] = True
+            del Xtr
+            bst = fit_lgb(X, y, isv, cols, "model")
+            best_iter = bst.best_iteration
+            del X
+        pv = np.concatenate([predict(bst, x, best_iter) for x in Xva])
+        va = pl.concat(vas).with_columns(pl.Series("p", pv))
+        del Xva
         ids = ids_all.filter(pl.Series(use)).filter(is_val("s1"))
-        cfg = {"cols": cols, "best_iter": bst.best_iteration, "stage2": False}
+        cfg = {"cols": cols, "best_iter": best_iter, "stage2": False, "model": a.model}
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
@@ -228,12 +289,17 @@ if "train" in stages:
 
 if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
-    bst = lgb.Booster(model_file=f"{a.work}/model.txt")
+    a.model = cfg.get("model", "lgb")
+    if a.model == "xgb":
+        import xgboost as xgb
+        bst = xgb.Booster(); bst.load_model(f"{a.work}/model.json")
+    else:
+        bst = lgb.Booster(model_file=f"{a.work}/model.txt")
     cand = load_candidates("test", a.work, cfg.get("caps", CAPS))
     parts = []
     if not cfg.get("stage2"):
         for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs):
-            p = bst.predict(t.select(cfg["cols"]).to_numpy().astype(np.float32), num_iteration=cfg["best_iter"])
+            p = predict(bst, t.select(cfg["cols"]).to_numpy().astype(np.float32), cfg["best_iter"])
             parts.append(t.select("s1", "m").with_columns(pl.Series("p", p)))
         del cand
     else:

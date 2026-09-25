@@ -98,22 +98,19 @@ def load_candidates(split, work, caps, keep_qi=None):
         if os.path.exists(f"{work}/{split}_{f}.parquet"):
             cand = cand.join(pl.read_parquet(f"{work}/{split}_{f}.parquet"), on=["qi", "ci"], how="full", coalesce=True)
     keep = pl.lit(False)
-    ctx = []
-    for r, sc, rk in ROUTES:
-        if rk not in cand.columns:
-            cand = cand.with_columns(pl.lit(None, pl.Float32).alias(sc), pl.lit(None, pl.Float32).alias(rk))
+    routes = [r for r in ROUTES if r[2] in cand.columns]      # only routes that produced candidates
+    for r, sc, rk in routes:
         cand = cand.with_columns(pl.col(sc).cast(pl.Float32), pl.col(rk).cast(pl.Float32))
         keep = keep | (pl.col(rk) <= caps.get(r, 0))
-        ctx.append(sc)
     n0 = cand.height
     cand = cand.filter(keep)
-    if "key_n" not in cand.columns:
-        cand = cand.with_columns(pl.lit(None, pl.Float32).alias("key_n"))
-    cand = cand.select("qi", "ci", *[c for _, sc, rk in ROUTES for c in (sc, rk)], pl.col("key_n").cast(pl.Float32))
-    cand = cand.with_columns([pl.col(sc).fill_null(0.0) for _, sc, _ in ROUTES] +
-                             [pl.col(rk).fill_null(999.0) for _, _, rk in ROUTES] + [pl.col("key_n").fill_null(0.0)])
-    cand = context_features(cand, ctx)
-    for _, sc, _ in ROUTES:
+    extra = [pl.col("key_n").cast(pl.Float32)] if "key_n" in cand.columns else []
+    cand = cand.select("qi", "ci", *[c for _, sc, rk in routes for c in (sc, rk)], *extra)
+    cand = cand.with_columns([pl.col(sc).fill_null(0.0) for _, sc, _ in routes] +
+                             [pl.col(rk).fill_null(999.0) for _, _, rk in routes] +
+                             ([pl.col("key_n").fill_null(0.0)] if extra else []))
+    cand = context_features(cand, [sc for _, sc, _ in routes])
+    for _, sc, _ in routes:
         cand = add_second_best(cand, sc, "ci", f"{sc}_margin_c")
         cand = add_second_best(cand, sc, "qi", f"{sc}_margin_q")
     log(split, "candidates", n0, "-> pruned", cand.height)
