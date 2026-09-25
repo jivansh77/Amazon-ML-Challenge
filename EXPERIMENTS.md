@@ -144,3 +144,22 @@ Blending does not help. The errors are systematic (hard decoys), not variance. X
 - Take TP per S1 per band from validation (France uses the US/India average) and divide by the observed test pairs per S1 in that band. That gives an estimated test precision per band.
 - A band is included when its precision is ≥ 0.78 (≈ F*/(1+β²)).
 - Result on the full-recipe model: **US 0.93, India 0.90, France 0.98**.
+
+## Decoy signature (train, best-S1 similarity ≥ 0.93)
+
+| | Decoys | True matches |
+|---|---|---|
+| Same first house number | **10%** | **79%** |
+| Same legal form | 49% | 74% |
+| Address near-identical | 32% | 65% |
+
+Decoys are "branches" of the S1 business: the same name plus an ADDED qualifier word, and the house number shifted upward by a small step.
+
+**Learned word log-odds (held-out S1 slice):**
+- Most decoy-like added words: holdings, care, clinic, east, west, north, south, valley, public, exports, ridge, overseas, health, metro, highland, summit, coastal, central, eastgate, uptown, downtown, midtown…
+- Most match-like added words: doing, known, nee, as, dba, formerly, fka (alias phrases), plus generator typos (lnfrastructure, prviate, 6reat).
+- France S2/S3 names over-represent développement, participations, associés, holding, distribution, groupe, services. These are the French qualifiers, so a hand-written EN→FR map transfers the scores.
+
+**Runs:**
+- `ber-dec-train`: best recipe + decoy features + stage-1 filter (top 15, p ≥ 0.005).
+- `ber-decdup-train`: the same + decoy duplication (test-like density in both training and validation).
