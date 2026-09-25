@@ -18,7 +18,7 @@ import polars as pl
 from ber.io import find_dataset_dir, read_ground_truth, write_id_lists
 from ber.metric import macro_f05
 from ber.pipeline import (log, stage_normalize, stage_block, stage_dense, load_candidates, iter_pair_tables,
-                          feature_columns, decode, decode_f05, score_context)
+                          feature_columns, decode, decode_f05, score_context, add_triangle)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True)
@@ -52,6 +52,7 @@ ap.add_argument("--drop_s1", type=float, default=0.0,
                 help="train/validate with this fraction of S1 removed (orphaned S2/S3 records, test-like density)")
 ap.add_argument("--s2_topk", type=int, default=0, help="stage 2 only scores the stage-1 top-k per S1 (0 = all)")
 ap.add_argument("--s2_minp", type=float, default=0.0, help="stage 2 only scores pairs with stage-1 p >= this")
+ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
 a = ap.parse_args()
@@ -324,6 +325,8 @@ if "train" in stages:
         # stage-1 scores for EVERY train pair (A rows are in-sample; they only act as competitors)
         ctx = score_context(score_all("train", cand, b1, cols, it1))
         ctx = ctx.filter(pl.col("qi").is_in(pl.Series(np.where(B)[0]).cast(pl.Int32).implode()))
+        if a.triangle:
+            ctx = add_triangle("train", a.work, ctx, jobs=a.jobs)
         ctx = s2_filter(ctx)
         gc.collect()
         # stage 2 on B
@@ -344,7 +347,7 @@ if "train" in stages:
     log("---- final model ----")
     best = tune_decoder(va, ids, truth)
     cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS,
-                "s2_topk": a.s2_topk, "s2_minp": a.s2_minp,
+                "s2_topk": a.s2_topk, "s2_minp": a.s2_minp, "triangle": a.triangle,
                 "global_sims": a.global_sims})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
@@ -391,6 +394,10 @@ if "test" in stages:
         b1 = load_model("model1", a.model)
         ctx = score_context(score_all("test", cand, b1, cfg["cols1"], cfg["best_iter1"]))
         a.s2_topk, a.s2_minp = cfg.get("s2_topk", 0), cfg.get("s2_minp", 0.0)
+        if a.triangle:
+            ctx = add_triangle("train", a.work, ctx, jobs=a.jobs)
+        if cfg.get("triangle"):
+            ctx = add_triangle("test", a.work, ctx, jobs=a.jobs)
         ctx = s2_filter(ctx).sort("qi")
         qs = ctx["qi"].to_numpy()
         for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs, chunk_s1=a.chunk_s1):

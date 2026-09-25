@@ -228,3 +228,32 @@ def score_context(p):
     p = add_second_best(p, "p1", "qi", "p1_margin_q")
     p = add_second_best(p, "p1", "ci", "p1_margin_c")
     return p
+
+
+def add_triangle(split, work, ctx, jobs=4, chunk=5_000_000):
+    """Consistency features: compare each candidate S2/S3 record with the S1's most confident OTHER
+    candidate (its "anchor"). True matches are copies of the same business and resemble each other;
+    a false merge is usually an outlier. ctx: (qi, ci, p1, p1_rank_q, ...) for all pairs of the S1s."""
+    from rapidfuzz import fuzz
+    from rapidfuzz.process import cpdist
+    top = ctx.filter(pl.col("p1_rank_q") <= 2).select("qi", "ci", "p1", "p1_rank_q")
+    a1 = top.filter(pl.col("p1_rank_q") == 1).select("qi", pl.col("ci").alias("a1"), pl.col("p1").alias("a1_p"))
+    a2 = top.filter(pl.col("p1_rank_q") == 2).select("qi", pl.col("ci").alias("a2"), pl.col("p1").alias("a2_p"))
+    t = ctx.select("qi", "ci").join(a1, on="qi", how="left").join(a2, on="qi", how="left")
+    t = t.with_columns(
+        pl.when(pl.col("ci") == pl.col("a1")).then(pl.col("a2")).otherwise(pl.col("a1")).alias("anchor"),
+        pl.when(pl.col("ci") == pl.col("a1")).then(pl.col("a2_p")).otherwise(pl.col("a1_p")).alias("tri_anchor_p"))
+    s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["name_core", "addr_clean"])
+    nm, ad = s23["name_core"], s23["addr_clean"]
+    ci, an = t["ci"].to_numpy(), t["anchor"].to_numpy()
+    has = ~np.isnan(an.astype(np.float64)) if an.dtype.kind == "f" else t["anchor"].is_not_null().to_numpy()
+    an_i = np.where(has, np.nan_to_num(an.astype(np.float64), nan=0), 0).astype(np.int64)
+    tn = np.full(len(ci), -1, np.float32); ta = np.full(len(ci), -1, np.float32)
+    for s in range(0, len(ci), chunk):
+        sl = slice(s, s + chunk)
+        c, b = ci[sl], an_i[sl]
+        tn[sl] = cpdist(nm.gather(c).to_list(), nm.gather(b).to_list(), scorer=fuzz.token_set_ratio, workers=jobs, dtype=np.float32)
+        ta[sl] = cpdist(ad.gather(c).to_list(), ad.gather(b).to_list(), scorer=fuzz.token_set_ratio, workers=jobs, dtype=np.float32)
+    tn[~has] = -1; ta[~has] = -1
+    return ctx.with_columns(pl.Series("tri_name", tn), pl.Series("tri_addr", ta),
+                            t["tri_anchor_p"].cast(pl.Float32).fill_null(-1).alias("tri_anchor_p"))
