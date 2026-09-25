@@ -10,7 +10,7 @@ with the official validator, and the final submission package is assembled:
 
   python scripts/make_main_notebook.py --args "--stages norm,block,dense,train,test" [--no-push]
 """
-import argparse, glob, json, os, subprocess
+import argparse, glob, json, os, shlex, subprocess
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--args", default="--stages norm,block,train,test")
@@ -21,6 +21,8 @@ ap.add_argument("--note", default="")
 ap.add_argument("--no-push", action="store_true")
 ap.add_argument("--src-kernel", action="append", default=[], help="kernels whose cached outputs are mounted")
 a = ap.parse_args()
+# quote every argument: in a notebook "!" cell the shell would otherwise expand globs like **/work
+a.args = " ".join(shlex.quote(x) for x in shlex.split(a.args))
 root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PKG = "/kaggle/working/submission/code/business_entity_resolution"
 
