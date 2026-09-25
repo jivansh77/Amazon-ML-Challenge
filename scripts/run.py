@@ -460,7 +460,8 @@ if "test" in stages:
     tab.write_parquet(f"{a.work}/test_scores.parquet")
     if a.prior_thr and os.path.exists(f"{a.work}/val_scores.parquet"):
         from ber.pipeline import prior_thresholds, decode_by_country
-        trc = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
+        from ber.io import read_source      # raw source: test-only runs don't mount the train caches
+        trc = read_source(os.path.join(dd, "train", "train_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
         tec = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
         thr_c, est = prior_thresholds(pl.read_parquet(f"{a.work}/val_scores.parquet"), tab, trc, tec)
         log("prior-corrected per-country thresholds:", thr_c)
