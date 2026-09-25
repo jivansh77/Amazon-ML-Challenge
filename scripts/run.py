@@ -323,12 +323,14 @@ if "train" in stages:
     truth = edges.filter(pl.col("s1").is_in(ids["s1"].implode()))
     log("---- final model ----")
     best = tune_decoder(va, ids, truth)
-    cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS})
+    cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS,
+                "global_sims": a.global_sims})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
 if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
     a.model = cfg.get("model", "lgb")
+    _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims   # must match training
     if a.model == "xgb":
         import xgboost as xgb
         bst = xgb.Booster(); bst.load_model(f"{a.work}/model.json")
