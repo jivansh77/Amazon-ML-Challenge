@@ -80,6 +80,7 @@ Validation is on 10% of the model-training S1 entities, hashed by S1 id. Candida
 
 | Run | Candidates | Model | Blocking recall | Oracle F0.5 | **Val F0.5** | US | India | Singletons | Matched | Decision |
 |---|---|---|---|---|---|---|---|---|---|---|
+| **ber-dec-train** | TF-IDF 20 ∪ dense 20 ∪ reverse 2, stage-1 filter (top 15, p ≥ 0.005) | two-stage XGBoost + global features + **decoy-signature features** (word log-odds with FR map, signed house-number shift), 45% + 45%, negative sampling 0.2, no drop | 0.9849 | 0.9953 | **0.9862** (stage 1: 0.9839) | 0.9879 | 0.9836 | 0.9822 | 0.9864 | expected-F0.5 decoder with exclusivity |
 | ber-big-train | TF-IDF 20 ∪ dense 20 ∪ reverse 2, then **stage-1 filter (top 15, p1 ≥ 0.005) → ~4.3 candidates per S1** into stage 2 | two-stage XGBoost + global features, 45% + 45% of S1, negative sampling 0.25, drop 19% | 0.9846 (after the filter) | 0.9952 | **0.9837** under density simulation (stage 1: 0.9811) | 0.9857 | 0.9807 | 0.9748 | 0.9842 | expected-F0.5 decoder |
 | ber-tri-train | as dropA + **triangle consistency features** (candidate vs the S1's anchor match) | – | 0.985 | 0.9954 | 0.98302 (dropA: 0.98297), **no gain** | 0.9849 | 0.9802 | 0.9710 | 0.9837 | expected-F0.5 decoder |
 | ber-dropA-train | same as s2gr2, **19% of S1 dropped** (test-like density, orphaned S2/S3) | two-stage XGBoost + global features | 0.985 | 0.9954 | **0.9830** under density simulation (stage 1: 0.9807) | 0.9850 | 0.9799 | 0.9736 | 0.9835 | expected-F0.5 decoder |
