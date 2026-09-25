@@ -79,6 +79,7 @@ if "block" in stages:
         stage_block(sp, a.work, k_tok=a.k_tok, n_threads=a.jobs, routes=tuple(a.routes.split(",")),
                     tok_max_df=a.tok_max_df, key_cap=a.key_cap, tok_extra=a.tok_extra)
         if sp == "train":   # full-scale recall report per route
+          try:
             s1i = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
             s2i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"].to_numpy()
             c = pl.read_parquet(f"{a.work}/train_cand.parquet")
@@ -89,31 +90,43 @@ if "block" in stages:
                 log(r, [(k, round(c.filter((pl.col(f"{r}_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4))
                         for k in [5, 10, 20, 30]])
             log("union recall", round(c["y"].sum() / ed.height, 4), "cands/S1", round(c.height / len(s1i), 1))
+          except Exception as ex:
+            log("recall report skipped:", repr(ex))
 
 if "dense" in stages:
     for sp in SPLITS:
-        stage_dense(sp, a.work, k=a.k_dense, dataset_dir=dd, k_rev=a.k_rev)
-    if "train" in SPLITS:   # full-scale recall of the dense route
-        from ber.io import read_split
-        _s1, _s23 = read_split(dd, "train")
-        s1i, s2i = _s1["entity_id"].to_numpy(), _s23["entity_id"].to_numpy()
-        del _s1, _s23
-        ed = read_ground_truth(dd).with_columns(pl.lit(1).alias("y"))
-        dn = pl.read_parquet(f"{a.work}/train_dense.parquet")
-        dn = dn.with_columns(pl.Series("s1", s1i[dn["qi"].to_numpy()]), pl.Series("m", s2i[dn["ci"].to_numpy()]))
-        dn = dn.join(ed, on=["s1", "m"], how="left")
-        for k in [5, 10, 20, 30, 50]:
-            log(f"dense recall@{k}", round(dn.filter((pl.col("dense_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4))
-        if os.path.exists(f"{a.work}/train_dense_rev.parquet"):
-            rv = pl.read_parquet(f"{a.work}/train_dense_rev.parquet")
-            rv = rv.with_columns(pl.Series("s1", s1i[rv["qi"].to_numpy()]), pl.Series("m", s2i[rv["ci"].to_numpy()]))
-            rv = rv.join(ed, on=["s1", "m"], how="left")
-            for k in [1, 2, 3, 5]:
-                fw = dn.filter(pl.col("dense_rank") <= 20).select("s1", "m")
-                un = pl.concat([fw, rv.filter(pl.col("rdense_rank") <= k).select("s1", "m")]).unique()
-                log(f"reverse recall@{k}", round(rv.filter((pl.col("rdense_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4),
-                    f"| forward@20 + reverse@{k}:", round(un.join(ed, on=["s1", "m"]).height / ed.height, 4),
-                    "pairs/S1", round(un.height / len(s1i), 1))
+        if not os.environ.get("BER_DENSE_REPORT_ONLY"):     # (testing hook)
+            stage_dense(sp, a.work, k=a.k_dense, dataset_dir=dd, k_rev=a.k_rev)
+    if "train" in SPLITS:   # full-scale recall of the dense routes (never allowed to fail the run)
+        try:
+            from ber.io import read_split
+            _s1, _s23 = read_split(dd, "train")
+            m1 = pl.DataFrame({"s1": _s1["entity_id"], "qi": np.arange(_s1.height, dtype=np.int64)})
+            m2 = pl.DataFrame({"m": _s23["entity_id"], "ci": np.arange(_s23.height, dtype=np.int64)})
+            n1 = _s1.height
+            del _s1, _s23
+            ek = read_ground_truth(dd).join(m1, on="s1").join(m2, on="m") \
+                .select((pl.col("qi") * 16777216 + pl.col("ci")).alias("k"))
+            del m1, m2
+            N = ek.height
+
+            def keys(path, rk, k):
+                return pl.read_parquet(path, columns=["qi", "ci", rk]).filter(pl.col(rk) <= k).select(
+                    (pl.col("qi").cast(pl.Int64) * 16777216 + pl.col("ci").cast(pl.Int64)).alias("k"))
+            for k in [5, 10, 20, 30]:
+                fk = keys(f"{a.work}/train_dense.parquet", "dense_rank", k)
+                log(f"dense recall@{k}", round(ek.join(fk, on="k").height / N, 4))
+            if os.path.exists(f"{a.work}/train_dense_rev.parquet"):
+                fw = keys(f"{a.work}/train_dense.parquet", "dense_rank", 20)
+                for k in [1, 2, 3, 5]:
+                    rk = keys(f"{a.work}/train_dense_rev.parquet", "rdense_rank", k)
+                    un = pl.concat([fw, rk]).unique()
+                    log(f"reverse recall@{k}", round(ek.join(rk, on="k").height / N, 4),
+                        f"| forward@20 + reverse@{k}:", round(ek.join(un, on="k").height / N, 4),
+                        "pairs/S1", round(un.height / n1, 1))
+                    del rk, un
+        except Exception as ex:   # reporting only
+            log("recall report skipped:", repr(ex))
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,

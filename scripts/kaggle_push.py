@@ -32,7 +32,9 @@ cmd = f"cd /kaggle/working/code && python -u {a.entry} --data {{data}} --work /k
 print(cmd, flush=True)
 r = subprocess.run(cmd, shell=True)
 subprocess.run("rm -rf /kaggle/working/code", shell=True)
-sys.exit(r.returncode)
+# never fail the kernel itself: Kaggle discards /kaggle/working of failed runs, and a crash late in the
+# pipeline (e.g. OOM kill) must not throw away stage outputs that were already written
+print("PIPELINE_EXIT=%d" % r.returncode, flush=True)
 '''
 kd = f"/tmp/claude-0/kk/{a.slug}"
 os.makedirs(kd, exist_ok=True)
