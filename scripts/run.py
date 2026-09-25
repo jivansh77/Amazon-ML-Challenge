@@ -28,6 +28,8 @@ ap.add_argument("--stages", default="norm,block,train,test")
 ap.add_argument("--indic", default=os.path.join(os.path.dirname(__file__), "..", "artifacts", "indic_dict.json"))
 ap.add_argument("--k_tok", type=int, default=30)
 ap.add_argument("--k_dense", type=int, default=20)
+ap.add_argument("--k_rev", type=int, default=0, help="dense stage: also keep top-k S1 per S2/S3 record")
+ap.add_argument("--cap_rdense", type=int, default=0)
 ap.add_argument("--splits", default="train,test", help="splits for the norm/block/dense stages")
 ap.add_argument("--routes", default="tok,key")
 ap.add_argument("--tok_max_df", type=float, default=0.01)
@@ -82,7 +84,7 @@ if "block" in stages:
 
 if "dense" in stages:
     for sp in SPLITS:
-        stage_dense(sp, a.work, k=a.k_dense, dataset_dir=dd)
+        stage_dense(sp, a.work, k=a.k_dense, dataset_dir=dd, k_rev=a.k_rev)
     if "train" in SPLITS:   # full-scale recall of the dense route
         from ber.io import read_split
         _s1, _s23 = read_split(dd, "train")
@@ -94,12 +96,22 @@ if "dense" in stages:
         dn = dn.join(ed, on=["s1", "m"], how="left")
         for k in [5, 10, 20, 30, 50]:
             log(f"dense recall@{k}", round(dn.filter((pl.col("dense_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4))
+        if os.path.exists(f"{a.work}/train_dense_rev.parquet"):
+            rv = pl.read_parquet(f"{a.work}/train_dense_rev.parquet")
+            rv = rv.with_columns(pl.Series("s1", s1i[rv["qi"].to_numpy()]), pl.Series("m", s2i[rv["ci"].to_numpy()]))
+            rv = rv.join(ed, on=["s1", "m"], how="left")
+            for k in [1, 2, 3, 5]:
+                fw = dn.filter(pl.col("dense_rank") <= 20).select("s1", "m")
+                un = pl.concat([fw, rv.filter(pl.col("rdense_rank") <= k).select("s1", "m")]).unique()
+                log(f"reverse recall@{k}", round(rv.filter((pl.col("rdense_rank") <= k) & (pl.col("y") == 1)).height / ed.height, 4),
+                    f"| forward@20 + reverse@{k}:", round(un.join(ed, on=["s1", "m"]).height / ed.height, 4),
+                    "pairs/S1", round(un.height / len(s1i), 1))
 
 PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_in_leaf=100,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               verbose=-1, num_threads=a.jobs)
 
-CAPS = {"tok": a.cap_tok, "key": a.cap_key, "dense": a.cap_dense}
+CAPS = {"tok": a.cap_tok, "key": a.cap_key, "dense": a.cap_dense, "rdense": a.cap_rdense}
 
 def fit_lgb(X, y, isv, cols, tag):
     dtr = lgb.Dataset(X[~isv], y[~isv], feature_name=cols, free_raw_data=True)

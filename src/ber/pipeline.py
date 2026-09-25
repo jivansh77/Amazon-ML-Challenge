@@ -39,7 +39,7 @@ def stage_block(split, work, k_tok=30, n_threads=4, routes=("tok",), tok_max_df=
     log(split, "blocked", cand.shape, "per S1", cand.height / s1.height)
 
 
-def stage_dense(split, work, k=20, dataset_dir=None):
+def stage_dense(split, work, k=20, dataset_dir=None, k_rev=0):
     """GPU dense retrieval per country; embeddings are not persisted (too large).
     Uses raw text, so it can read the source files directly (same row order as *_s1n/_s23n)."""
     from .dense import record_text, encode, topk_by_country
@@ -50,7 +50,7 @@ def stage_dense(split, work, k=20, dataset_dir=None):
     else:
         s1, s23 = read_split(dataset_dir, split)
         s1, s23 = s1.select(cols), s23.select(cols)
-    parts = []
+    parts, rparts = [], []
     for ctry in s1["country"].unique().to_list():
         qi = np.where(s1["country"].to_numpy() == ctry)[0]
         ci = np.where(s23["country"].to_numpy() == ctry)[0]
@@ -60,10 +60,19 @@ def stage_dense(split, work, k=20, dataset_dir=None):
         d = topk_by_country(qe, np.zeros(len(qi), np.int8), ce, np.zeros(len(ci), np.int8), k)
         parts.append(d.with_columns(pl.Series("qi", qi[d["qi"].to_numpy()]).cast(pl.Int32),
                                     pl.Series("ci", ci[d["ci"].to_numpy()]).cast(pl.Int32)))
+        if k_rev:   # reverse direction: for every S2/S3 record, its top S1s
+            r = topk_by_country(ce, np.zeros(len(ci), np.int8), qe, np.zeros(len(qi), np.int8), k_rev)
+            rparts.append(pl.DataFrame({"qi": qi[r["ci"].to_numpy()].astype(np.int32),
+                                        "ci": ci[r["qi"].to_numpy()].astype(np.int32),
+                                        "rdense_score": r["dense_score"], "rdense_rank": r["dense_rank"]}))
         del qe, ce
     cand = pl.concat(parts)
     cand.write_parquet(f"{work}/{split}_dense.parquet")
     log(split, "dense candidates", cand.shape)
+    if rparts:
+        r = pl.concat(rparts)
+        r.write_parquet(f"{work}/{split}_dense_rev.parquet")
+        log(split, "reverse dense candidates", r.shape)
 
 
 def add_second_best(df, col, grp, name):
@@ -77,15 +86,17 @@ def add_second_best(df, col, grp, name):
             .drop("_m1", "_m2"))
 
 
-ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("dense", "dense_score", "dense_rank")]
+ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("dense", "dense_score", "dense_rank"),
+          ("rdense", "rdense_score", "rdense_rank")]
 
 
 def load_candidates(split, work, caps, keep_qi=None):
     """Union of all available routes, pruned by per-route rank caps, with global context
     features computed on blocking scores (cheap, and identical at train and test time)."""
     cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
-    if os.path.exists(f"{work}/{split}_dense.parquet"):
-        cand = cand.join(pl.read_parquet(f"{work}/{split}_dense.parquet"), on=["qi", "ci"], how="full", coalesce=True)
+    for f in ["dense", "dense_rev"]:
+        if os.path.exists(f"{work}/{split}_{f}.parquet"):
+            cand = cand.join(pl.read_parquet(f"{work}/{split}_{f}.parquet"), on=["qi", "ci"], how="full", coalesce=True)
     keep = pl.lit(False)
     ctx = []
     for r, sc, rk in ROUTES:
