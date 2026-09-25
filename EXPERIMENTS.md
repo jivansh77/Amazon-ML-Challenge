@@ -52,7 +52,8 @@ This route targets name-only S2/S3 records whose generic name ties with many loo
 | ber-xgb-test (0.9801 on validation) | 0.9705 |
 | ber-s2-test (0.9831 on validation) | 0.970 |
 | same scores, thr 0.30 | 0.956 |
-| same scores, thr 0.90 + exclusivity | **0.973** |
+| same scores, thr 0.90 + exclusivity | 0.973 |
+| ber-big-test + prior-corrected per-country thresholds (US .90 / India .85 / France .97), 4.35 candidates per S1 | **0.9757** |
 
 Conclusion: on test we are precision-limited, and validation gains that come from recall do not transfer.
 
