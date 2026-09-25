@@ -56,6 +56,7 @@ ap.add_argument("--prior_thr", action="store_true",
                 help="test stage: per-country thresholds corrected for the test decoy density (needs val_scores)")
 ap.add_argument("--decoy_feats", action="store_true", help="decoy-signature features (extra/missing name words, signed house-number shift)")
 ap.add_argument("--dup_decoys", action="store_true", help="duplicate near decoy candidates in training (test-like decoy density)")
+ap.add_argument("--dup_near", type=int, default=10, help="only duplicate decoys within this route rank of the S1")
 ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
@@ -344,7 +345,7 @@ if "train" in stages:
     h = np.where(drop, 10_000, h)      # dropped S1 never enter A / B / use
     if not a.stage2:
         use = h < a.train_frac * 1000
-        cand = load_candidates("train", a.work, CAPS, keep_qi=use, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm)
+        cand = load_candidates("train", a.work, CAPS, keep_qi=use, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm, dup_near=a.dup_near)
         Xtr, ytr, wtr, Xva, yva, vfr, cols = collect("train", cand, use, lab)
         del cand
         bst, best_iter = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model")
@@ -359,7 +360,7 @@ if "train" in stages:
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
-        cand = load_candidates("train", a.work, CAPS, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm)
+        cand = load_candidates("train", a.work, CAPS, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm, dup_near=a.dup_near)
         # stage 1 on A
         Xtr, ytr, wtr, Xva, yva, _, cols = collect("train", cand, A, lab)
         b1, it1 = fit_model(Xtr, ytr, wtr, Xva, yva, cols, "model1")
