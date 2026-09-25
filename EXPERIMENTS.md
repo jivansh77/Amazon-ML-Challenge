@@ -276,3 +276,38 @@ Other French decoy patterns: a category word swapped at the same address (Comite
 | p < 0.3 and CE > 0.99 | 440 | 74% |
 | p > 0.9 and CE < 0.3 | 1362 | 80% |
 | Blend in [0.85, 0.97) | 5776 | 94.6% |
+
+### Results of the France runs (26 Sep, early)
+
+**`ber-dec-test2`** (test re-scored with the 101 French extra-words):
+
+| Effect | Pairs |
+|---|---|
+| France pairs changed by > 0.01 | 86k |
+| France pairs changed by > 0.2 | 17.6k |
+| "+ France" pairs dropped by the stage-1 filter | 23k of 36.5k |
+
+- Pure additions collapse, e.g. "club projets" → "club projets france": 0.986 → 0.016.
+- The model is non-monotonic in the new score: substitutions ("ase culturelle" → "ase france") rose from 0.04 to 0.93.
+- Band totals barely move.
+- The new words also touch ~95k US/India pairs (club, sport, bar, residence… occur there). The probe files therefore keep the old US/India scores.
+
+**`ber-ce-fr-train`** (cross-encoder continued on 300k confident French test pairs + 290k US/India training pairs, lr 2e-5, 4.6k steps):
+- Validation-band AUC 0.9377, against 0.9383 before: no US/India damage.
+- On France's band the mean CE drops from 0.53 to 0.32. 29% of pairs the old CE scored ≥ 0.99 fall below 0.5.
+- What gets rejected: category-word swaps at the same address (Loisirs → Fetes, Club → Groupement), "Cie" → "Et Fils", same name at a different street with the same number, "+ France".
+- Clear errors: abbreviation expansions such as "DV Ets" → "DV Établissements" (0.10).
+- The pseudo-labels carry the stage-2 model's view (the confident-negative set includes pairs where it overrode the CE), so the adapted CE mostly learns that view for France.
+
+**France pair budget** (pairs per S1 per band, after exclusivity):
+- US/India test pairs per band ≈ validation true matches per band. Their thresholds are consistent.
+- France has 3.05–3.09 pairs per S1 in the top band vs 3.33, and about 2× the pairs in every band from 0.7 to 0.98.
+
+**Earlier LB pair:** big thr 0.90 → per-country (FR 0.97, IN 0.85) gained +0.0027. India's part is worth ~+0.0001, so the removed France [0.90, 0.97) pairs were only ~20% true matches. France probably has fewer matches per S1, and its lower bands are mostly decoys, so France thresholds stay high.
+
+**Probe files** (US/India identical to `dec_ce_percountry`; only France differs):
+
+| File | France rows changed vs dec_ce |
+|---|---|
+| `matching_results_dec_ce_frwords.tsv` (French words, France thr 0.97) | 1.9% |
+| `matching_results_dec_ce_frwords_frce.tsv` (+ French CE, France thr 0.97) | 5.4% |
