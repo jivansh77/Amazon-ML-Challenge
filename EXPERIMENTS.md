@@ -36,4 +36,16 @@ The misses are 61% India. Among them:
 
 ## Matching model
 
-Pending: results of `ber-exp-tok`, `ber-exp-union` and `ber-exp-union-s2`.
+Validation is on 10% of the model-training S1 entities, hashed by S1 id. Candidates come from the full S2/S3 pool, and singletons are included. The metric is macro F0.5.
+
+| Run | Candidates | Model | Blocking recall | Oracle F0.5 | **Val F0.5** | US | India | Singletons | Matched | Decision |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ber-exp-tok | TF-IDF top 30 | LightGBM, 67 features, 30% of S1 (19.9M pairs), 1500 rounds | 0.953 | 0.984 | **0.9660** | 0.972 | 0.957 | 0.974 | 0.966 | thr 0.70 + exclusivity (expected-F0.5 decoder: 0.9658) |
+
+**ber-exp-tok test predictions:**
+- 93.6% of S1 get at least one match.
+- Matches per matched S1: France 3.0, India 3.37, US 3.5. France looks plausible despite having no labels.
+
+**Top features by gain:**
+- The candidate-side competition features dominate: `tok_score_margin_c`, `tok_score_rank_c`, `tok_score_gap_c`. They describe how this S1 compares with the other S1s competing for the same S2/S3 record.
+- These are followed by the house-number features `num_tset` and `num_first_ratio`, then the name similarities.
