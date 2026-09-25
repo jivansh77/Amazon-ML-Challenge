@@ -33,6 +33,20 @@ This route targets name-only S2/S3 records whose generic name ties with many loo
 | Forward top 20 + reverse top 2 | 0.9713 | 22.7 |
 | Forward top 20 + reverse top 3 | 0.9739 | 25.8 |
 
+**Three-route union on full train:**
+
+| TF-IDF + dense + reverse | Recall |
+|---|---|
+| 30 + 30 + 0 | 0.9831 |
+| 30 + 30 + 1 | 0.9857 |
+| 30 + 30 + 2 | 0.9867 |
+| 25 + 25 + 2 | 0.9859 |
+| **20 + 20 + 2** | **0.9848** |
+| 20 + 20 + 3 | 0.9857 |
+| 15 + 15 + 2 | 0.9832 |
+
+**First leaderboard point:** `ber-xgb-test` scored 0.9801 on validation and **0.9705 on the public LB**. The gap is about 0.01; the likely causes are France (no labels) and the denser test pool.
+
 The first run was killed (out of memory) inside the recall report, after all files had been written. Kaggle keeps no outputs from failed runs, so the kernel wrapper now always exits cleanly.
 
 ### What the TF-IDF route misses (362k pairs)
