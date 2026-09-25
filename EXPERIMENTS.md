@@ -198,4 +198,34 @@ Linear averaging is a little weaker (best 0.9862).
 
 **big + CE test file** (`matching_results_big_ce_percountry.tsv`): per-country thresholds US 0.70 / India 0.80 / France 0.97, 3.33 matches per S1.
 
-The next step is `ber-cescore-dec`, which applies the saved cross-encoder to the dec model's bands.
+## dec + cross-encoder (`ber-cescore-dec`)
+
+The saved cross-encoder scored the dec model's uncertain band:
+
+| Band | Pairs |
+|---|---|
+| Validation | 74,473 |
+| Test | 1,385,388 |
+
+**AUC on the dec validation band:**
+
+| Scorer | AUC |
+|---|---|
+| Stage-2 model | 0.9651 |
+| Cross-encoder | 0.9383 |
+| **Mean of the two** | **0.9708** |
+
+**Blend on dec's validation.** The 1,335 validation S1s (1.39%) that the cross-encoder saw in training are excluded, so the numbers are clean.
+
+| Blend | Best threshold F0.5 | F0.5 decoder |
+|---|---|---|
+| dec alone | 0.98651 | 0.98655 |
+| linear, w = 0.6 | 0.98757 | 0.98718 |
+| logit, w = 0.8 | 0.98839 | 0.98821 |
+| **logit, w = 0.6** | **0.98862** (thr 0.8) | 0.98837 |
+| logit, w = 0.5 | 0.98824 | 0.98753 |
+
+**Test file** `matching_results_dec_ce_percountry.tsv`:
+- Per-country thresholds: US 0.80 / India 0.80 / France 0.97.
+- 5.75M pairs (3.32 per S1). Passes the official validator against `candidate_pairs_dec.tsv`.
+- Agreement with other files (share of identical rows): 90.4% with big_percountry (LB 0.9757), 95.2% with dec_percountry.
