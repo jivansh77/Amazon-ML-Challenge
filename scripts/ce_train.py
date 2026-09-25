@@ -19,7 +19,10 @@ os.makedirs(a.work, exist_ok=True)
 root = [d for d in glob.glob(a.ce_data, recursive=True) if os.path.isdir(d)]
 f = lambda name: glob.glob(os.path.join(root[0], "**", name), recursive=True)[0]
 print("ce data:", root[0], flush=True)
+if a.model_dir and not os.path.isdir(a.model_dir):     # allow a glob (mounted kernel output)
+    a.model_dir = [d for d in glob.glob(a.model_dir, recursive=True) if os.path.isdir(d)][0]
 MODEL = a.model_dir or "intfloat/multilingual-e5-small"
+print("model:", MODEL, flush=True)
 tok = AutoTokenizer.from_pretrained(MODEL)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL, num_labels=1).cuda()
 if not a.model_dir:
