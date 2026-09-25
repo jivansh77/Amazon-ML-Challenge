@@ -79,6 +79,7 @@ Validation is on 10% of the model-training S1 entities, hashed by S1 id. Candida
 
 | Run | Candidates | Model | Blocking recall | Oracle F0.5 | **Val F0.5** | US | India | Singletons | Matched | Decision |
 |---|---|---|---|---|---|---|---|---|---|---|
+| ber-big-train | TF-IDF 20 ∪ dense 20 ∪ reverse 2, then **stage-1 filter (top 15, p1 ≥ 0.005) → ~4.3 candidates per S1** into stage 2 | two-stage XGBoost + global features, 45% + 45% of S1, negative sampling 0.25, drop 19% | 0.9846 (after the filter) | 0.9952 | **0.9837** under density simulation (stage 1: 0.9811) | 0.9857 | 0.9807 | 0.9748 | 0.9842 | expected-F0.5 decoder |
 | ber-dropA-train | same as s2gr2, **19% of S1 dropped** (test-like density, orphaned S2/S3) | two-stage XGBoost + global features | 0.985 | 0.9954 | **0.9830** under density simulation (stage 1: 0.9807) | 0.9850 | 0.9799 | 0.9736 | 0.9835 | expected-F0.5 decoder |
 | ber-dropB-train | as dropA + stage-1 filter top-5 / p≥0.01 | – | 0.937 (the filter is too aggressive) | 0.9887 | 0.9779 | – | – | – | – | expected-F0.5 decoder |
 | ber-s2gr2-train | TF-IDF 20 ∪ dense 20 ∪ **reverse dense 2** (recall 0.985) | Two-stage XGBoost + global competition features + house-number features, negative sampling 0.3 | 0.985 | – | **0.9837** (stage 1: 0.9814) | 0.9859 | 0.9804 | 0.9738 | 0.9843 | expected-F0.5 decoder |
