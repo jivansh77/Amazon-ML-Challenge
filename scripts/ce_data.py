@@ -28,7 +28,7 @@ ap.add_argument("--n_s1", type=int, default=160_000)
 ap.add_argument("--lo", type=float, default=0.02)
 ap.add_argument("--hi", type=float, default=0.998)
 ap.add_argument("--skip_scored", default=None, help="test: leave out pairs already in this ce_test.parquet")
-ap.add_argument("--test_countries", default=None, help="test: only S1 of these countries (comma-separated)")
+ap.add_argument("--test_countries", default=None, help="test: only S1 of these countries (comma-separated, or 'unlabelled')")
 ap.add_argument("--ce_scores", default=None, help="pseudo: cross-encoder test scores to blend in (logit, w=0.6)")
 ap.add_argument("--pseudo_hi", type=float, default=0.995)
 ap.add_argument("--pseudo_lo", type=float, default=0.02)
@@ -97,7 +97,10 @@ if "test" in parts:
     s1, s23 = read_split(dd, "test")
     tb = pl.read_parquet(f"{a.work}/test_scores.parquet").filter(band)
     if a.test_countries:
-        keep = s1.filter(pl.col("country").is_in(a.test_countries.split(",")))["entity_id"].implode()
+        cs = a.test_countries.split(",")
+        if cs == ["unlabelled"]:     # every test country without training labels
+            cs = sorted(set(s1["country"].unique().to_list()) - set(read_split(dd, "train")[0]["country"].unique().to_list()))
+        keep = s1.filter(pl.col("country").is_in(cs))["entity_id"].implode()
         tb = tb.filter(pl.col("s1").is_in(keep))
     if a.skip_scored:
         tb = tb.join(pl.read_parquet(a.skip_scored, columns=["s1", "m"]), on=["s1", "m"], how="anti")

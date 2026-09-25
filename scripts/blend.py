@@ -30,6 +30,9 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--w", type=float, default=None, help="weight of the stage-2 model (default: best on validation)")
 ap.add_argument("--min_prec", type=float, default=0.78)
 ap.add_argument("--thr", default=None, help="override thresholds, e.g. US=0.8,France=0.95 (others: prior estimate)")
+ap.add_argument("--override_scores", default=None,
+                help="COUNTRY:path[,COUNTRY:path]: test scores for that country's S1 come from another run "
+                     "(COUNTRY 'unlabelled' = every test country without training labels, i.e. France)")
 ap.add_argument("--ce_test_override", default=None,
                 help="cross-encoder test scores that replace the --ce ones for their pairs (e.g. a country-adapted model)")
 a = ap.parse_args()
@@ -67,9 +70,17 @@ if a.ce_test_override:
     ov = pl.read_parquet(a.ce_test_override, columns=["s1", "m", "ce"])
     ct = pl.concat([ct.join(ov, on=["s1", "m"], how="anti"), ov])
     log("cross-encoder scores replaced for", ov.height, "test pairs")
-te = blend(pl.read_parquet(f"{a.work}/test_scores.parquet"), ct, w)
 trc = read_source(os.path.join(dd, "train", "train_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
 tec = read_source(os.path.join(dd, "test", "test_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
+ts = pl.read_parquet(f"{a.work}/test_scores.parquet", columns=["s1", "m", "p"])
+unlabelled = sorted(set(tec["country"].unique().to_list()) - set(trc["country"].unique().to_list()))
+for item in (a.override_scores.split(",") if a.override_scores else []):
+    c, path = item.split(":", 1)
+    cs = unlabelled if c == "unlabelled" else [c]      # "unlabelled" = test countries without training labels
+    ids = tec.filter(pl.col("country").is_in(cs))["s1"].implode()
+    ts = pl.concat([ts.filter(~pl.col("s1").is_in(ids)), pl.read_parquet(path, columns=["s1", "m", "p"]).filter(pl.col("s1").is_in(ids))])
+    log(f"{cs}: test scores taken from {path}")
+te = blend(ts, ct, w)
 thr, est = prior_thresholds(blend(va, cv, w), te, trc, tec, min_prec=a.min_prec)
 log("per-country thresholds (prior estimate):", thr)
 if a.thr:

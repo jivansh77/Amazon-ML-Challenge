@@ -76,6 +76,8 @@ if a.reuse:
             for f in (glob.glob(os.path.join(d, "*.parquet")) + glob.glob(os.path.join(d, "model*.txt")) +
                       glob.glob(os.path.join(d, "model*.json")) + glob.glob(os.path.join(d, "cfg.json"))):
                 dst = os.path.join(a.work, os.path.basename(f))
+                if os.path.basename(f) == "test_scores.parquet":     # an output of this run, never an input
+                    continue
                 if not os.path.exists(dst):
                     os.symlink(f, dst)
                     log("reusing", f)
@@ -465,6 +467,8 @@ if "test" in stages:
     s1_all = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id"])["entity_id"]
     s23_all = pl.read_parquet(f"{a.work}/test_s23n.parquet", columns=["entity_id"])["entity_id"]
     tab = tab.with_columns(s1_all.gather(tab["qi"]).alias("s1"), s23_all.gather(tab["ci"]).alias("m")).drop("qi", "ci")
+    if os.path.islink(f"{a.work}/test_scores.parquet"):     # never write through a reused link
+        os.unlink(f"{a.work}/test_scores.parquet")
     tab.write_parquet(f"{a.work}/test_scores.parquet")
     if a.prior_thr and os.path.exists(f"{a.work}/val_scores.parquet"):
         from ber.pipeline import prior_thresholds, decode_by_country
