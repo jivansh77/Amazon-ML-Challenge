@@ -226,7 +226,8 @@ def collect(split, cand, mask, lab, ctx=None, cols=None, seed=0):
     Xtr, ytr, wtr, Xva, yva, vas = [], [], [], [], [], []
     for t in iter_pair_tables(split, a.work, cand, s1_filter=mask, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
         if ctx is not None:
-            t = t.join(ctx, on=["qi", "ci"], how="left")
+            sub = ctx.filter(pl.col("qi").is_between(t["qi"].min(), t["qi"].max()))
+            t = t.join(sub, on=["qi", "ci"], how="left")
         t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
         cols = cols or feature_columns(t)
         tr = t.filter(~pl.col("is_val"))
@@ -345,8 +346,11 @@ if "test" in stages:
     else:
         b1 = load_model("model1", a.model)
         ctx = score_context(score_all("test", cand, b1, cfg["cols1"], cfg["best_iter1"]))
+        ctx = ctx.sort("qi")
+        qs = ctx["qi"].to_numpy()
         for t in iter_pair_tables("test", a.work, cand, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
-            t = t.join(ctx, on=["qi", "ci"], how="left")
+            lo, hi = np.searchsorted(qs, [t["qi"].min(), t["qi"].max() + 1])     # this chunk's slice only
+            t = t.join(ctx.slice(lo, hi - lo), on=["qi", "ci"], how="left")
             p = predict(bst, t.select(cfg["cols"]).to_numpy().astype(np.float32), cfg["best_iter"])
             parts.append(t.select("qi", "ci").with_columns(pl.Series("p", p).cast(pl.Float32)))
             del t, p; gc.collect()
