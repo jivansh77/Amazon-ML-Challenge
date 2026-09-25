@@ -80,7 +80,7 @@ def add_second_best(df, col, grp, name):
 ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("dense", "dense_score", "dense_rank")]
 
 
-def load_candidates(split, work, caps):
+def load_candidates(split, work, caps, keep_qi=None):
     """Union of all available routes, pruned by per-route rank caps, with global context
     features computed on blocking scores (cheap, and identical at train and test time)."""
     cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
@@ -106,20 +106,26 @@ def load_candidates(split, work, caps):
         cand = add_second_best(cand, sc, "ci", f"{sc}_margin_c")
         cand = add_second_best(cand, sc, "qi", f"{sc}_margin_q")
     log(split, "candidates", n0, "-> pruned", cand.height)
+    if keep_qi is not None:     # context is computed on ALL pairs first, then rows are restricted
+        cand = cand.filter(pl.col("qi").is_in(pl.Series(np.where(keep_qi)[0]).cast(pl.Int32).implode()))
+        log(split, "restricted to", cand.height, "pairs")
     return cand
 
 
 def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_000):
     """Yield feature tables for chunks of S1 rows (bounded memory)."""
-    s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet")
-    s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet")
-    s1_ids, s23_ids = s1["entity_id"].to_numpy(), s23["entity_id"].to_numpy()
+    from .features import A_COLS, B_COLS, TokenSpace
+    s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=["entity_id"] + A_COLS)
+    s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["entity_id", "src"] + B_COLS)
+    s1_ids, s23_ids = s1["entity_id"], s23["entity_id"]
     src = s23["src"].to_numpy().astype(np.float32)
+    spaces = (TokenSpace(s1["name_core"].to_list(), s23["name_core"].to_list()),
+              TokenSpace(s1["addr_clean"].to_list(), s23["addr_clean"].to_list()))
     rows = np.arange(s1.height) if s1_filter is None else np.where(s1_filter)[0]
     for s in range(0, len(rows), chunk_s1):
         sub = pl.Series(rows[s:s + chunk_s1]).cast(pl.Int32).implode()
         c = cand.filter(pl.col("qi").is_in(sub))
-        f = pair_features(s1, s23, c, jobs=n_jobs)
+        f = pair_features(s1, s23, c, jobs=n_jobs, spaces=spaces)
         t = pl.concat([c, f], how="horizontal")
         del f
         t = t.with_columns(pl.Series("src", src[t["ci"].to_numpy()]),
@@ -128,7 +134,7 @@ def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_0
                            pl.col("sim_mix").rank("ordinal", descending=True).over("qi").cast(pl.Float32)
                            .alias("sim_mix_rank_q"))
         t = add_second_best(t, "sim_mix", "qi", "sim_mix_margin_q")
-        t = t.with_columns(pl.Series("s1", s1_ids[t["qi"].to_numpy()]), pl.Series("m", s23_ids[t["ci"].to_numpy()]))
+        t = t.with_columns(s1_ids.gather(t["qi"]).alias("s1"), s23_ids.gather(t["ci"]).alias("m"))
         log(split, f"chunk {s // chunk_s1}: {t.shape}")
         yield t
 

@@ -143,10 +143,10 @@ if "train" in stages:
     h = s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy()
     edges = read_ground_truth(dd)
     lab = edges.with_columns(pl.lit(1, pl.Int8).alias("y"))
-    cand = load_candidates("train", a.work, CAPS)
     ids_all = s1.rename({"entity_id": "s1"})
     if not a.stage2:
         use = h < a.train_frac * 1000
+        cand = load_candidates("train", a.work, CAPS, keep_qi=use)
         Xs, ys, vs, vas, cols = [], [], [], [], None
         for t in iter_pair_tables("train", a.work, cand, s1_filter=use, n_jobs=a.jobs):
             t = t.join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0), is_val("s1").alias("is_val"))
@@ -164,6 +164,7 @@ if "train" in stages:
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
+        cand = load_candidates("train", a.work, CAPS)
         # stage 1: fit on A
         Xs, ys, vs, cols = [], [], [], None
         for t in iter_pair_tables("train", a.work, cand, s1_filter=A, n_jobs=a.jobs):

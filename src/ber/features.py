@@ -53,33 +53,38 @@ def _cp(a, b, scorer, jobs):
     return cpdist(a, b, scorer=scorer, workers=jobs, dtype=np.float32)
 
 
-def pair_features(s1, s23, cand, jobs=4, chunk=4_000_000):
-    """cand: frame with qi (row in s1) and ci (row in s23). Returns float32 feature frame."""
-    ts_n = TokenSpace(s1["name_core"].to_list(), s23["name_core"].to_list())
-    ts_a = TokenSpace(s1["addr_clean"].to_list(), s23["addr_clean"].to_list())
+A_COLS = ["name_clean", "name_core", "name_legal", "addr_clean", "addr_nums", "addr_words"]
+B_COLS = ["name_clean", "name_core", "name_alt", "name_legal", "name_is_web", "addr_clean", "addr_nums", "addr_words"]
 
-    def col(df, c):
-        return df[c].to_numpy()
 
-    A = {c: col(s1, c) for c in ["name_clean", "name_core", "name_legal", "addr_clean", "addr_nums", "addr_words"]}
-    B = {c: col(s23, c) for c in ["name_clean", "name_core", "name_alt", "name_legal", "addr_clean", "addr_nums",
-                                  "addr_words"]}
-    B["name_is_web"] = col(s23, "name_is_web").astype(np.float32)
-    # derived per-record strings (computed once per record, not per pair)
-    A["compact"] = np.array([s.replace(" ", "") for s in A["name_core"]], dtype=object)
-    B["compact"] = np.array([s.replace(" ", "") for s in B["name_core"]], dtype=object)
-    A["acr"] = np.array(["".join(w[0] for w in s.split()) if len(s.split()) >= 2 else "\x00" for s in A["name_core"]], dtype=object)
-    B["acr"] = np.array(["".join(w[0] for w in s.split()) if len(s.split()) >= 2 else "\x01" for s in B["name_core"]], dtype=object)
-    A["num0"] = np.array([s.split()[0] if s else "" for s in A["addr_nums"]], dtype=object)
-    B["num0"] = np.array([s.split()[0] if s else "" for s in B["addr_nums"]], dtype=object)
+def _derived(df, side):
+    """Per-record derived strings, computed once in Arrow memory (no Python objects)."""
+    nc = pl.col("name_core")
+    ntok = nc.str.split(" ")
+    acr = pl.when(ntok.list.len() >= 2).then(ntok.list.eval(pl.element().str.slice(0, 1)).list.join("")) \
+            .otherwise(pl.lit("\x00" if side == "a" else "\x01"))
+    return df.with_columns(nc.str.replace_all(" ", "").alias("compact"), acr.alias("acr"),
+                           pl.col("addr_nums").str.split(" ").list.first().fill_null("").alias("num0"))
 
+
+def pair_features(s1, s23, cand, jobs=4, chunk=3_000_000, spaces=None):
+    """cand: frame with qi (row in s1) and ci (row in s23). Returns float32 feature frame.
+    s1/s23 need the columns in A_COLS/B_COLS; strings are gathered per chunk."""
+    ts_n, ts_a = spaces or (TokenSpace(s1["name_core"].to_list(), s23["name_core"].to_list()),
+                            TokenSpace(s1["addr_clean"].to_list(), s23["addr_clean"].to_list()))
+    A = _derived(s1.select(A_COLS), "a")
+    B = _derived(s23.select(B_COLS), "b")
     qi_all = cand["qi"].to_numpy()
     ci_all = cand["ci"].to_numpy()
     parts = []
     for s in range(0, len(qi_all), chunk):
         qi, ci = qi_all[s:s + chunk], ci_all[s:s + chunk]
-        a = {k: v[qi] for k, v in A.items()}
-        b = {k: v[ci] for k, v in B.items()}
+        ga, gb = A[qi], B[ci]                 # row gathers stay in Arrow memory
+
+        def L(df, c):
+            return df[c].to_list()
+        a = {c: L(ga, c) for c in ["name_clean", "name_core", "addr_clean", "addr_nums", "addr_words", "compact", "num0"]}
+        b = {c: L(gb, c) for c in ["name_clean", "name_core", "name_alt", "addr_clean", "addr_nums", "addr_words", "compact", "num0"]}
         f = {}
         f["n_ratio"] = _cp(a["name_core"], b["name_core"], fuzz.ratio, jobs)
         f["n_tset"] = _cp(a["name_core"], b["name_core"], fuzz.token_set_ratio, jobs)
@@ -88,32 +93,34 @@ def pair_features(s1, s23, cand, jobs=4, chunk=4_000_000):
         f["n_jw"] = _cp(a["name_core"], b["name_core"], JaroWinkler.normalized_similarity, jobs)
         f["n_clean_tset"] = _cp(a["name_clean"], b["name_clean"], fuzz.token_set_ratio, jobs)
         f["n_clean_ratio"] = _cp(a["name_clean"], b["name_clean"], fuzz.ratio, jobs)
-        has_alt = b["name_alt"] != ""
+        has_alt = (gb["name_alt"] != "").to_numpy()
         f["n_alt_tset"] = np.where(has_alt, _cp(a["name_core"], b["name_alt"], fuzz.token_set_ratio, jobs), -1)
         f["n_compact_ratio"] = _cp(a["compact"], b["compact"], fuzz.ratio, jobs)
         f["n_compact_partial"] = _cp(a["compact"], b["compact"], fuzz.partial_ratio, jobs)
-        f["n_acr_a"] = (a["acr"] == b["compact"]).astype(np.float32)
-        f["n_acr_b"] = (b["acr"] == a["compact"]).astype(np.float32)
+        f["n_acr_a"] = (ga["acr"] == gb["compact"]).to_numpy().astype(np.float32)
+        f["n_acr_b"] = (gb["acr"] == ga["compact"]).to_numpy().astype(np.float32)
         f["n_widf"], f["n_widf_max"], f["n_shared"] = ts_n.pair_stats(qi, ci)
-        f["n_len_a"] = np.fromiter((len(x) for x in a["name_core"]), np.float32, len(qi))
-        f["n_len_b"] = np.fromiter((len(x) for x in b["name_core"]), np.float32, len(qi))
-        f["legal_eq"] = (a["name_legal"] == b["name_legal"]).astype(np.float32)
-        f["legal_missing"] = ((a["name_legal"] == "") != (b["name_legal"] == "")).astype(np.float32)
-        f["b_is_web"] = b["name_is_web"]
-        empty = b["addr_clean"] == ""
+        f["n_len_a"] = ga["name_core"].str.len_chars().to_numpy()
+        f["n_len_b"] = gb["name_core"].str.len_chars().to_numpy()
+        la, lb = ga["name_legal"], gb["name_legal"]
+        f["legal_eq"] = (la == lb).to_numpy().astype(np.float32)
+        f["legal_missing"] = ((la == "") != (lb == "")).to_numpy().astype(np.float32)
+        f["b_is_web"] = gb["name_is_web"].cast(pl.Float32).to_numpy()
+        empty = (gb["addr_clean"] == "").to_numpy()
         for nm, sc in [("a_ratio", fuzz.ratio), ("a_tset", fuzz.token_set_ratio),
                        ("a_partial", fuzz.partial_ratio), ("a_tsort", fuzz.token_sort_ratio)]:
             f[nm] = np.where(empty, -1, _cp(a["addr_clean"], b["addr_clean"], sc, jobs))
         f["a_words_tset"] = np.where(empty, -1, _cp(a["addr_words"], b["addr_words"], fuzz.token_set_ratio, jobs))
         f["a_widf"], f["a_widf_max"], f["a_shared"] = ts_a.pair_stats(qi, ci)
-        no_num = (a["addr_nums"] == "") | (b["addr_nums"] == "")
+        no_num = ((ga["addr_nums"] == "") | (gb["addr_nums"] == "")).to_numpy()
         f["num_tset"] = np.where(no_num, -1, _cp(a["addr_nums"], b["addr_nums"], fuzz.token_set_ratio, jobs))
-        f["num_first_eq"] = np.where(no_num, -1, (a["num0"] == b["num0"]).astype(np.float32))
+        f["num_first_eq"] = np.where(no_num, -1, (ga["num0"] == gb["num0"]).to_numpy().astype(np.float32))
         f["num_first_ratio"] = np.where(no_num, -1, _cp(a["num0"], b["num0"], fuzz.ratio, jobs))
-        f["a_len_a"] = np.fromiter((len(x) for x in a["addr_clean"]), np.float32, len(qi))
-        f["a_len_b"] = np.fromiter((len(x) for x in b["addr_clean"]), np.float32, len(qi))
+        f["a_len_a"] = ga["addr_clean"].str.len_chars().to_numpy()
+        f["a_len_b"] = gb["addr_clean"].str.len_chars().to_numpy()
         f["b_addr_empty"] = empty.astype(np.float32)
         f["x_nameb_in_addra"] = _cp(b["name_core"], a["addr_clean"], fuzz.partial_ratio, jobs)
+        del a, b, ga, gb
         parts.append(pl.DataFrame({k: np.asarray(v, dtype=np.float32) for k, v in f.items()}))
     return pl.concat(parts)
 
