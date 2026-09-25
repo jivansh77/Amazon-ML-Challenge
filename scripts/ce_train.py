@@ -1,4 +1,4 @@
-"""Cross-encoder (intfloat/multilingual-e5-small, MIT) fine-tuned on hard (S1, S2/S3) candidate pairs.
+"""Cross-encoder (intfloat/multilingual-e5-small or -base, MIT) fine-tuned on hard (S1, S2/S3) candidate pairs.
 
 Reads train/val_band/test_band parquet files (columns a, b [, y, p]) from --ce_data, trains for at most
 --train_min minutes, saves the model to <work>/ce_model and writes <work>/ce_val.parquet and ce_test.parquet
@@ -16,6 +16,7 @@ ap.add_argument("--init_dir", default=None, help="continue fine-tuning from this
 ap.add_argument("--train_mix", default="train.parquet:1",
                 help="training files in --ce_data with the fraction of rows to use, e.g. pseudo.parquet:1,train.parquet:0.1")
 ap.add_argument("--lr", type=float, default=5e-5)
+ap.add_argument("--base_model", default="intfloat/multilingual-e5-small", help="pretrained encoder to fine-tune (MIT)")
 ap.add_argument("--train_min", type=float, default=55)
 ap.add_argument("--bs", type=int, default=128); ap.add_argument("--maxlen", type=int, default=128)
 a = ap.parse_args()
@@ -27,7 +28,7 @@ for k in ("model_dir", "init_dir"):                   # allow a glob (mounted ke
     v = getattr(a, k)
     if v and not os.path.isdir(v):
         setattr(a, k, [d for d in glob.glob(v, recursive=True) if os.path.isdir(d)][0])
-MODEL = a.model_dir or a.init_dir or "intfloat/multilingual-e5-small"
+MODEL = a.model_dir or a.init_dir or a.base_model
 print("model:", MODEL, flush=True)
 tok = AutoTokenizer.from_pretrained(MODEL)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL, num_labels=1).cuda()
