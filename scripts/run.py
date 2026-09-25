@@ -322,7 +322,10 @@ def fit_model(Xtr, ytr, wtr, Xva, yva, cols, tag):
 def load_model(tag, kind):
     if kind == "xgb":
         import xgboost as xgb
-        b = xgb.Booster(); b.load_model(f"{a.work}/{tag}.json"); return b
+        b = xgb.Booster(); b.load_model(f"{a.work}/{tag}.json")
+        if not os.path.exists("/dev/nvidia0"):     # trained on GPU; predict on CPU when there is none
+            b.set_param({"device": "cpu"})
+        return b
     return lgb.Booster(model_file=f"{a.work}/{tag}.txt")
 
 
@@ -431,11 +434,7 @@ if "test" in stages:
     _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims   # must match training
     if cfg.get("decoy_feats"):
         load_decoy_odds()
-    if a.model == "xgb":
-        import xgboost as xgb
-        bst = xgb.Booster(); bst.load_model(f"{a.work}/model.json")
-    else:
-        bst = lgb.Booster(model_file=f"{a.work}/model.txt")
+    bst = load_model("model", a.model)
     cand = load_candidates("test", a.work, cfg.get("caps", CAPS))
     parts = []
     import gc
