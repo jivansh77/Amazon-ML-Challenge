@@ -6,6 +6,8 @@
                      every candidate within route rank 5 and 35% of those ranked 6-10 (columns s1, m, y, a, b)
   val_band.parquet   validation pairs in the uncertain band (0.02 <= p < 0.998) of work/val_scores.parquet
   test_band.parquet  test pairs in that band of work/test_scores.parquet
+  pseudo.parquet     (--parts pseudo) self-training pairs for test countries WITHOUT training labels: confident
+                     test predictions (blended with --ce_scores) as labels, --pseudo_n per class
 The text of a record is "business_name | business_address".
 """
 import argparse, os, sys
@@ -26,6 +28,11 @@ ap.add_argument("--n_s1", type=int, default=160_000)
 ap.add_argument("--lo", type=float, default=0.02)
 ap.add_argument("--hi", type=float, default=0.998)
 ap.add_argument("--skip_scored", default=None, help="test: leave out pairs already in this ce_test.parquet")
+ap.add_argument("--test_countries", default=None, help="test: only S1 of these countries (comma-separated)")
+ap.add_argument("--ce_scores", default=None, help="pseudo: cross-encoder test scores to blend in (logit, w=0.6)")
+ap.add_argument("--pseudo_hi", type=float, default=0.995)
+ap.add_argument("--pseudo_lo", type=float, default=0.02)
+ap.add_argument("--pseudo_n", type=int, default=150_000)
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 dd = find_dataset_dir(a.data)
@@ -71,9 +78,27 @@ if "train" in parts or "val" in parts:
                         neg.filter(pl.col("r") > 5).sample(fraction=0.35, seed=0)])
         tr = with_text(tr.sample(fraction=1.0, shuffle=True, seed=1).select("s1", "m", "y"), s1, s23)
         tr.write_parquet(f"{a.out}/train.parquet"); log("train pairs", tr.height, "positive rate", round(tr["y"].mean(), 3))
+if "pseudo" in parts:
+    s1, s23 = read_split(dd, "test")
+    seen = set(read_split(dd, "train")[0]["country"].unique().to_list())
+    new_c = sorted(set(s1["country"].unique().to_list()) - seen)
+    te = pl.read_parquet(f"{a.work}/test_scores.parquet").join(s1.select(pl.col("entity_id").alias("s1"), "country"), on="s1")
+    te = te.filter(pl.col("country").is_in(new_c))
+    if a.ce_scores:
+        lg = lambda c: (pl.col(c).clip(1e-6, 1 - 1e-6) / (1 - pl.col(c).clip(1e-6, 1 - 1e-6))).log()
+        te = te.join(pl.read_parquet(a.ce_scores, columns=["s1", "m", "ce"]), on=["s1", "m"], how="left").with_columns(
+            p=pl.when(pl.col("ce").is_null()).then(pl.col("p")).otherwise(1 / (1 + (-(0.6 * lg("p") + 0.4 * lg("ce"))).exp())))
+    pos = te.filter(pl.col("p") >= a.pseudo_hi); neg = te.filter(pl.col("p") <= a.pseudo_lo)
+    pos = pos.sample(min(a.pseudo_n, pos.height), seed=0).with_columns(pl.lit(1, pl.Int8).alias("y"))
+    neg = neg.sample(min(a.pseudo_n, neg.height), seed=0).with_columns(pl.lit(0, pl.Int8).alias("y"))
+    ps = with_text(pl.concat([pos, neg]).select("s1", "m", "y"), s1, s23)
+    ps.write_parquet(f"{a.out}/pseudo.parquet"); log("pseudo pairs for", new_c, ps.height, "positive rate", round(ps["y"].mean(), 3))
 if "test" in parts:
     s1, s23 = read_split(dd, "test")
     tb = pl.read_parquet(f"{a.work}/test_scores.parquet").filter(band)
+    if a.test_countries:
+        keep = s1.filter(pl.col("country").is_in(a.test_countries.split(",")))["entity_id"].implode()
+        tb = tb.filter(pl.col("s1").is_in(keep))
     if a.skip_scored:
         tb = tb.join(pl.read_parquet(a.skip_scored, columns=["s1", "m"]), on=["s1", "m"], how="anti")
     tb = with_text(tb, s1, s23).select("s1", "m", "p", "a", "b")
