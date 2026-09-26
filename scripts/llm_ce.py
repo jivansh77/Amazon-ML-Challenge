@@ -32,7 +32,8 @@ a = ap.parse_args()
 
 ddp = "LOCAL_RANK" in os.environ
 if ddp:
-    dist.init_process_group("nccl")
+    import datetime
+    dist.init_process_group("nccl", timeout=datetime.timedelta(hours=3))    # ranks wait for each other's chunks
 rank = dist.get_rank() if ddp else 0
 world = dist.get_world_size() if ddp else 1
 dev = int(os.environ.get("LOCAL_RANK", 0))
@@ -72,7 +73,7 @@ if not a.score_only:
     files = [glob.glob(os.path.join(a.ce_data, "**", "train.parquet"), recursive=True)[0]]
     files += a.extra_train.split(",") if a.extra_train else []
     tr = pl.concat([pl.read_parquet(f, columns=["a", "b", "y"]) for f in files]).sample(fraction=1.0, shuffle=True, seed=0)
-    tr = tr.head(a.train_pairs)
+    tr = tr.head(min(a.train_pairs, tr.height) // (world * a.bs) * (world * a.bs))   # equal steps on every rank
     tr = tr[rank::world]                                    # each rank its own shard
     A, B, Y = tr["a"].to_list(), tr["b"].to_list(), tr["y"].to_numpy().astype(np.float32)
     n_steps = len(A) // a.bs
@@ -127,18 +128,21 @@ for name in a.parts.split(","):
         continue
     d = pl.read_parquet(fs[0]).with_row_index("_i")
     os.makedirs(f"{a.work}/chunks", exist_ok=True)
-    for c0 in range(0, d.height, a.chunk):
-        fn = f"{a.work}/chunks/{name}_{c0 // a.chunk:04d}.parquet"
-        if os.path.exists(fn):
+    for k, c0 in enumerate(range(0, d.height, a.chunk)):
+        fn = f"{a.work}/chunks/{name}_{k:04d}.parquet"
+        if k % world != rank or os.path.exists(fn):       # chunks are shared out over the GPUs
             continue
         part = d.slice(c0, a.chunk); t = time.time()
         part.with_columns(pl.Series("ce", score(part))).drop("a", "b").write_parquet(fn + ".tmp")
         os.replace(fn + ".tmp", fn)
-        log(name, "chunk", c0 // a.chunk, part.height, f"scored in {time.time() - t:.0f}s")
-    d = pl.concat([pl.read_parquet(f) for f in sorted(glob.glob(f"{a.work}/chunks/{name}_*.parquet"))]).sort("_i").drop("_i")
-    d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")
-    if "y" in d.columns:
-        from sklearn.metrics import roc_auc_score
-        log("VAL band AUC  stage-2 p:", round(roc_auc_score(d["y"], d["p"]), 4), " LLM:", round(roc_auc_score(d["y"], d["ce"]), 4))
+        print(time.strftime("%H:%M:%S"), f"rank {rank}", name, "chunk", k, part.height, f"scored in {time.time() - t:.0f}s", flush=True)
+    if ddp:
+        dist.barrier()
+    if rank == 0:
+        d = pl.concat([pl.read_parquet(f) for f in sorted(glob.glob(f"{a.work}/chunks/{name}_*.parquet"))]).sort("_i").drop("_i")
+        d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")
+        if "y" in d.columns:
+            from sklearn.metrics import roc_auc_score
+            log("VAL band AUC  stage-2 p:", round(roc_auc_score(d["y"], d["p"]), 4), " LLM:", round(roc_auc_score(d["y"], d["ce"]), 4))
 if ddp:
     dist.destroy_process_group()
