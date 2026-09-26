@@ -23,6 +23,7 @@ ap.add_argument("--lora_r", type=int, default=16)
 ap.add_argument("--train_min", type=float, default=240)
 ap.add_argument("--score_only", default=None, help="dir with a saved adapter: skip training")
 ap.add_argument("--init_adapter", default=None, help="continue training from a saved adapter (after a lost VM)")
+ap.add_argument("--skip_pairs", type=int, default=0, help="skip the first N shuffled training pairs (already seen)")
 ap.add_argument("--save_every", type=int, default=1500, help="save the adapter every N steps (sessions can die)")
 ap.add_argument("--score_bs", type=int, default=128)
 ap.add_argument("--parts", default="val_band,test_band")
@@ -73,6 +74,7 @@ if not a.score_only:
     files = [glob.glob(os.path.join(a.ce_data, "**", "train.parquet"), recursive=True)[0]]
     files += a.extra_train.split(",") if a.extra_train else []
     tr = pl.concat([pl.read_parquet(f, columns=["a", "b", "y"]) for f in files]).sample(fraction=1.0, shuffle=True, seed=0)
+    tr = tr.slice(a.skip_pairs)
     tr = tr.head(min(a.train_pairs, tr.height) // (world * a.bs) * (world * a.bs))   # equal steps on every rank
     tr = tr[rank::world]                                    # each rank its own shard
     A, B, Y = tr["a"].to_list(), tr["b"].to_list(), tr["y"].to_numpy().astype(np.float32)
