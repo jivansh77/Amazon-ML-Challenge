@@ -601,3 +601,13 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - **Qwen2.5-7B LoRA, 217k pairs (Colab A100, 100 min):** val band AUC 0.930 (e5-base round 3: 0.957); every blend
   lowers clean val (best 0.98940 vs 0.98952). Too little training; rerun on all 2.2M pairs on AWS 4x L40S.
 - **Qwen test-set cut** (score only pairs with model+e5 blend in [0.05, 0.995)): identical val F0.5 to scoring all.
+
+## Reverse-name route for records without an address (AWS `ml.g5.12xlarge`, full pipeline)
+- Validation misses: 72% of the remaining F0.5 loss is "S1 with some true matches missing"; ~half of the missed
+  true pairs were never candidates, and 64% of those are S2/S3 records with an EMPTY address (3.3% of records).
+- `namerev` stage: for every S2/S3 record without an address, top-5 S1 by char 3-gram TF-IDF on the name
+  (same country); offline recall of those misses: 53% at 5, 58% at 10. Route pairs keep full context features
+  (the Kaggle run with them was OOM-killed at 82M pairs; the AWS machine has 192 GB).
+- Blocking recall 0.9849 -> **0.9888**, oracle F0.5 0.9953 -> **0.9964**.
+- Clean val (94,236 common S1): model alone 0.98649 -> **0.98696**; + e5-base CE round 3 (w 0.6)
+  0.98950 -> **0.99003**, with CE scores on only 73% of the new band so far.
