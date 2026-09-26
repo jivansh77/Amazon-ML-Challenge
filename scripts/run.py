@@ -61,6 +61,14 @@ ap.add_argument("--triangle", action="store_true", help="stage-2 consistency fea
 ap.add_argument("--train_countries", default=None,
                 help="train both stages and the decoy odds only on these countries (comma-separated); validation keeps "
                      "every country, so the others act as labelled 'unseen countries' (a stand-in for France)")
+ap.add_argument("--self_train", action="store_true",
+                help="with --train_countries: pseudo-label the other countries' non-validation S1 with the stage-2 model "
+                     "(p >= --st_hi -> match, <= --st_lo -> non-match), refit stage 2 on labels + pseudo-labels")
+ap.add_argument("--pseudo_scores", default=None,
+                help="selftrain stage: parquet (s1, m, p) of the final (blended) test probabilities used as pseudo-labels")
+ap.add_argument("--st_hi", type=float, default=0.99)
+ap.add_argument("--st_lo", type=float, default=0.05)
+ap.add_argument("--st_weight", type=float, default=1.0)
 ap.add_argument("--swap_ab", action="store_true",
                 help="stage 1 on the usual stage-2 slice and stage 2 on the usual stage-1 slice (a second, diverse model); "
                      "also scores the usual model's validation S1 into val_scores_other.parquet so the two can be averaged")
@@ -200,7 +208,10 @@ def fit_xgb(Xtr, ytr, Xva, yva, cols, tag, wtr=None):
     import xgboost as xgb
     dtr = xgb.QuantileDMatrix(_Batches(Xtr, ytr, cols, wtr), max_bin=XGB_PARAMS["max_bin"])
     dva = xgb.QuantileDMatrix(_Batches(Xva, yva, cols), ref=dtr)
-    bst = xgb.train(XGB_PARAMS, dtr, num_boost_round=a.rounds, evals=[(dva, "val")],
+    params = dict(XGB_PARAMS)
+    if not os.path.exists("/dev/nvidia0"):      # no GPU in this session: same model on CPU
+        params["device"] = "cpu"
+    bst = xgb.train(params, dtr, num_boost_round=a.rounds, evals=[(dva, "val")],
                     early_stopping_rounds=100, verbose_eval=200)
     bst.save_model(f"{a.work}/{tag}.json")
     imp = sorted(bst.get_score(importance_type="total_gain").items(), key=lambda x: -x[1])
@@ -402,6 +413,12 @@ if "train" in stages:
         ctx_x = None
         if XV is not None:     # stage-1 slice S1 held out of stage-1 training (early stopping only)
             ctx_x = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(XV)[0]).cast(pl.Int32).implode())))
+        ctx_p = None
+        if a.self_train and a.train_countries:     # unlabelled pool: other countries' S1 outside validation
+            isv = s1.select(is_val("entity_id"))["entity_id"].to_numpy()
+            P = (h < (a.frac_a + a.frac_b) * 1000) & ~cmask & ~isv
+            ctx_p = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(P)[0]).cast(pl.Int32).implode())))
+            log("self-training pool S1:", int(P.sum()))
         ctx = ctx.filter(pl.col("qi").is_in(pl.Series(np.where(B)[0]).cast(pl.Int32).implode()))
         if a.triangle:
             ctx = add_triangle("train", a.work, ctx, jobs=a.jobs)
@@ -410,7 +427,32 @@ if "train" in stages:
         # stage 2 on B
         Xtr, ytr, wtr, Xva, yva, tbv, cols2 = collect("train", cand, B, lab, ctx=ctx, seed=1)
         del ctx
-        bst, it2 = fit_model(Xtr, ytr, wtr, Xva, yva, cols2, "model")
+        Xes, yes = Xva, yva
+        if a.train_countries:      # early stopping on the training countries' validation rows only
+            tr_s1 = s1.filter(pl.Series(cmask))["entity_id"].implode()
+            m_tr = tbv["s1"].is_in(tr_s1).to_numpy()
+            Xes, yes = [np.concatenate(Xva)[m_tr]], [np.concatenate(yva)[m_tr]]
+        bst, it2 = fit_model(Xtr, ytr, wtr, Xes, yes, cols2, "model")
+        if ctx_p is not None:
+            tbv.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva]))) \
+               .write_parquet(f"{a.work}/val_scores_base.parquet")
+            ids_p, Xp, pp = [], [], []
+            for t in iter_pair_tables("train", a.work, cand, s1_filter=P, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
+                sub = ctx_p.filter(pl.col("qi").is_between(t["qi"].min(), t["qi"].max()))
+                t = t.join(sub, on=["qi", "ci"], how="inner")
+                X = t.select(cols2).to_numpy().astype(np.float32); pr = predict(bst, X, it2)
+                keep = (pr >= a.st_hi) | (pr <= a.st_lo)
+                ids_p.append(t.select("s1", "m").filter(pl.Series(keep))); Xp.append(X[keep]); pp.append(pr[keep])
+                del t, X
+            ids_p = pl.concat(ids_p); pp = np.concatenate(pp); yp = (pp >= a.st_hi).astype(np.float32)
+            chk = ids_p.with_columns(pl.Series("yp", yp)).join(lab, on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0))
+            log("pseudo-labels:", len(yp), "positive", int(yp.sum()), "| accuracy vs the hidden labels:",
+                round(float((chk["yp"] == chk["y"]).mean()), 4), "| positives precision:",
+                round(float(chk.filter(pl.col("yp") == 1)["y"].mean()), 4))
+            Xp = np.concatenate(Xp)
+            bst, it2 = fit_model(Xtr + [Xp], ytr + [yp], wtr + [np.full(len(yp), a.st_weight, np.float32)], Xes, yes, cols2, "model")
+            del Xp, ids_p, chk
+            log("stage 2 refit with pseudo-labels, best_iter", it2)
         if ctx_x is not None:
             _, _, _, Xx, _, tbx, _ = collect("train", cand, XV, lab, ctx=ctx_x, cols=cols2, seed=2)
             tbx.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xx]))) \
@@ -457,6 +499,57 @@ if "dump" in stages:
     ids.write_parquet(f"{D}/val_ids.parquet")
     edges.filter(pl.col("s1").is_in(ids["s1"].implode())).write_parquet(f"{D}/val_truth.parquet")
     log("dumped", D, os.listdir(D))
+
+if "selftrain" in stages:
+    # domain adaptation for test countries WITHOUT training labels (France): refit stage 2 on its usual training
+    # rows plus the confident pseudo-labels of those countries' test pairs, then re-score those countries only
+    import gc
+    cfg = json.load(open(f"{a.work}/cfg.json"))
+    a.model = cfg.get("model", "lgb")
+    _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims
+    a.s2_topk, a.s2_minp = cfg.get("s2_topk", 0), cfg.get("s2_minp", 0.0)
+    caps = cfg.get("caps", CAPS)
+    if cfg.get("decoy_feats"):
+        load_decoy_odds()
+    b1 = load_model("model1", a.model)
+    s1 = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"])
+    h = s1.select((pl.col("entity_id").hash(11) % 1000).alias("h"))["h"].to_numpy()
+    B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
+    lab = read_ground_truth(dd).with_columns(pl.lit(1, pl.Int8).alias("y"))
+    cand = load_candidates("train", a.work, caps)          # 1) the stage-2 training rows, as in training
+    ctx = score_context(score_all("train", cand, b1, cfg["cols1"], cfg["best_iter1"]))
+    ctx = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(B)[0]).cast(pl.Int32).implode())))
+    Xtr, ytr, wtr, Xva, yva, tbv, cols2 = collect("train", cand, B, lab, ctx=ctx, cols=cfg["cols"], seed=1)
+    del cand, ctx; gc.collect()
+    tec = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id", "country"])
+    new_c = sorted(set(tec["country"].unique().to_list()) - set(s1["country"].unique().to_list()))
+    U = tec["country"].is_in(new_c).to_numpy()
+    log("self-training on", new_c, "test S1:", int(U.sum()))
+    cand = load_candidates("test", a.work, caps)           # 2) their test pairs (candidates never cross countries)
+    ctx = s2_filter(score_context(score_all("test", cand, b1, cfg["cols1"], cfg["best_iter1"], mask=U)))
+    ids_u, Xu = [], []
+    for t in iter_pair_tables("test", a.work, cand, s1_filter=U, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
+        t = t.join(ctx.filter(pl.col("qi").is_between(t["qi"].min(), t["qi"].max())), on=["qi", "ci"], how="inner")
+        ids_u.append(t.select("s1", "m")); Xu.append(t.select(cols2).to_numpy().astype(np.float32))
+        del t
+    del cand, ctx; gc.collect()
+    ids_u = pl.concat(ids_u); Xu = np.concatenate(Xu)
+    import glob as _g
+    src = a.pseudo_scores if os.path.exists(a.pseudo_scores) else _g.glob(a.pseudo_scores, recursive=True)[0]
+    ps = ids_u.join(pl.read_parquet(src, columns=["s1", "m", "p"]), on=["s1", "m"], how="left")["p"] \
+        .fill_null(0.5).to_numpy()
+    conf = (ps >= a.st_hi) | (ps <= a.st_lo)
+    yp = (ps[conf] >= a.st_hi).astype(np.float32)
+    log("pseudo-labels:", int(conf.sum()), "of", len(ps), "pairs, positive", int(yp.sum()))
+    bst, it2 = fit_model(Xtr + [Xu[conf]], ytr + [yp], wtr + [np.full(len(yp), a.st_weight, np.float32)],
+                         Xva, yva, cols2, "model_st")
+    va = tbv.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva])))
+    va.write_parquet(f"{a.work}/val_scores_st.parquet")
+    ids = s1.rename({"entity_id": "s1"}).filter(pl.Series(B)).filter(is_val("s1"))
+    log("labelled-country validation after self-training:")
+    tune_decoder(va, ids, lab.select("s1", "m").filter(pl.col("s1").is_in(ids["s1"].implode())))
+    ids_u.with_columns(pl.Series("p", predict(bst, Xu, it2)).cast(pl.Float32)).write_parquet(f"{a.work}/test_scores_st.parquet")
+    log("wrote test_scores_st.parquet for", new_c, len(ps), "pairs")
 
 if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))

@@ -461,3 +461,82 @@ The optimum is flat for w in 0.6–0.65 and thresholds 0.75–0.8.
 
 The gain is +0.0072. If US/India score their validation 0.989 on test, France is at about 0.92, so it is still the weak spot.
 | `dec_cebase_frv2_frce` (France: v2 words + French CE, FR 0.97) | **0.983051** (+0.0002 vs baseline, France only) |
+
+## Unseen-country stand-in: train on US only, validate on India (`ber-usonly-train`)
+
+| India validation, 37,437 S1 | Best F0.5 | Best threshold |
+|---|---|---|
+| dec (trained with India labels) | 0.984 | 0.70 |
+| **US-only model** | **0.936** | 0.85–0.90 (flat 0.80–0.93) |
+
+US itself barely moves (0.9880 → 0.9876).
+
+- An unseen country loses ~5 points, consistent with France's implied LB F0.5 of ~0.92. Its best threshold also rises, as the France probes showed.
+- Errors at the best threshold: FP 5.6k vs 0.6k (9×), FN 10.7k vs 5.0k (2×).
+- The band is huge: 4.5 pairs per S1 in 0.02–0.998, against 0.75 when India is seen. India is a harsher stand-in than France (Indic scripts).
+- Adding the base CE (which did see India, so this is optimistic; only 16% of the band has CE scores): 0.936 → 0.951 at w 0.6 and 0.952 at w 0.4. More CE weight helps an unseen country.
+
+Next: `ber-usonly-st` tests `--self_train`, i.e. pseudo-labels on India from the US-only stage 2 and a refit.
+
+### Self-training on the stand-in (`ber-usonly-st`): no gain
+
+- Pseudo-labels on 715k India S1 outside validation: 2.46M pairs, 97.8% accurate against the hidden labels.
+- Stage 2 was refit on US labels plus India pseudo-labels.
+
+| | Best F0.5 |
+|---|---|
+| India, base | 0.9376 (thr 0.9) |
+| India, self-trained | 0.9358 (thr 0.95) |
+| US | unchanged |
+
+Confident pseudo-labels teach nothing about the uncertain pairs (confirmation bias), so `ber-selftrain-fr` is not used for France.
+
+**Next:** a US-only cross-encoder (`ber-ceus-train`, e5-small) scores the stand-in's validation band (442k pairs). This gives an honest measure of how much a CE, and which blend weight, helps an unseen country.
+
+### Honest CE on the stand-in (`ber-ceus-train`: e5-small trained on US pairs only, 2.47M pairs)
+
+India validation band (442k pairs of the US-only model), excluding the CE's training S1:
+
+| | Model AUC | CE AUC |
+|---|---|---|
+| India | 0.956 | 0.940 |
+| US | 0.997 | 0.995 |
+
+| Unseen India, blend weight w (model) | Best F0.5 | At threshold |
+|---|---|---|
+| Model alone | 0.9332 | 0.9 |
+| **w 0.7** | **0.9565** | 0.7 |
+| w 0.6 | 0.9527 | 0.6 |
+| w 0.5 | 0.9453 | – |
+
+For US, w 0.6 is best (0.9898). The CE is the biggest lever for an unseen country (+2.3 points).
+
+**Gain per added pair vs its precision** (labelled stand-in, w 0.6):
+
+| Band | Precision | Gain per added pair |
+|---|---|---|
+| [0.93, 0.97) | 0.959 | +0.124 |
+| [0.90, 0.93) | 0.942 | +0.114 |
+| [0.85, 0.90) | 0.916 | +0.102 |
+| [0.80, 0.85) | 0.885 | +0.085 |
+| [0.70, 0.80) | 0.815 | +0.058 |
+| [0.60, 0.70) | 0.699 | +0.008 |
+
+Break-even is ~0.68–0.70.
+
+**What this means for France:**
+- The fr93 LB gain per added pair was +0.0175 (16,372 pairs). On this scale France's [0.93, 0.97) band is only ~0.72–0.80 precise.
+- France is more decided (4× fewer mid-band pairs than the stand-in) but less precise at a given score.
+- [0.90, 0.93) is therefore at or below break-even: keep France at 0.93.
+
+## Base CE continued on fresh S1 (`ber-ce-base2`)
+
+- Setup: 2.02M new pairs from 160k training S1 never seen by any CE, lr 2e-5.
+- Validation-band AUC: 0.9545 (base 0.9453).
+- Clean-validation blend: **0.98934** at w 0.6 / thr 0.8, and 0.98942 at thr 0.75. Base was 0.98905.
+
+New safe upload `dec_cebase2_frv2_frce_fr93`:
+- France is identical to `dec_cebase_frv2_frce_fr93` (calibrated words + French CE, 0.93).
+- US/India use base2; 99.1% of their rows are unchanged.
+
+`ber-cefr-base2` adapts base2 to France (pseudo pairs + 5% fresh pairs, 40 min).

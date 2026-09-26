@@ -137,10 +137,13 @@ Text normalisation before blocking and matching:
 **Model type:**
 - **Two-stage XGBoost** (GPU, hist, lossguide, 255 leaves, eta 0.08, early stopping). Stage 1 trains on 45% of the training S1, stage 2 on a disjoint 45%, and 10% is held out for validation. Easy negatives are subsampled (rate 0.2) with compensating weights.
 - **Cross-encoder.**
-  - `intfloat/multilingual-e5-small` (MIT) fine-tuned as a pair classifier on "name | address" text: 2.2M hard pairs from 160k training S1 outside the validation split, 24% positives, one T4 hour.
+  - `intfloat/multilingual-e5-base` (MIT, 278M parameters) fine-tuned as a pair classifier on "name | address" text.
+  - Trained in rounds on hard pairs of fresh training S1 that are never in the validation split. Each round is 160k S1 and 2.2M pairs (24% positives), 150–170 T4 minutes.
+  - Each round starts from the previous checkpoint.
+  - The first small-model version (e5-small) is kept for France, where it is adapted to French (see below).
   - It re-scores pairs in the uncertain band 0.02 ≤ p < 0.998 (19% of pairs).
   - It is blended on the logit scale with weight 0.6 for XGBoost (chosen on validation).
-  - AUC on the band: XGBoost 0.965, cross-encoder 0.938, blend 0.971. They are complementary.
+  - AUC on the uncertain band: XGBoost 0.965. The cross-encoder rises from 0.938 (e5-small) to 0.945 (e5-base) to 0.955 (e5-base, second round). Their blend reaches 0.975, so the two are complementary.
 - CatBoost (0.9784) and random forest (0.9693) were weaker than XGBoost (0.9799) on identical features, and blending them did not help.
 - All models are MIT/Apache-licensed and far below 8B parameters.
 
@@ -180,9 +183,27 @@ Text normalisation before blocking and matching:
 | TF-IDF ∪ dense + XGBoost | 0.9799 |
 | Two-stage XGBoost + reverse dense + competition features | 0.9837 |
 | + decoy-signature features | 0.9865 |
-| **+ cross-encoder blend (final)** | **0.9886** |
+| + cross-encoder blend (e5-small) | 0.9886 |
+| + e5-base cross-encoder | 0.9891 |
+| **+ second e5-base round (final)** | **0.9893** |
 
-- **Public leaderboard:** 0.9705 → 0.9730 → **0.9757** (per-country thresholds) → [final].
+- **Public leaderboard:**
+
+| Submission | Public LB |
+|---|---|
+| First model | 0.9705 |
+| + thr 0.90 + exclusivity | 0.9730 |
+| + per-country thresholds | 0.9757 |
+| + decoy features + e5-base cross-encoder | 0.9829 |
+| + France fix | 0.9831 |
+| France threshold 0.93 (on the baseline) | 0.9830, vs 0.98286 at 0.97 |
+| Final | [final] |
+
+**Unseen-country stand-in** (train on US only, validate on India):
+- F0.5 falls from 0.984 to 0.933. That confirms France's implied ~0.92 is a transfer problem, not bad luck.
+- A US-only cross-encoder recovers 2.3 points (0.957).
+- Self-training on pseudo-labels recovers nothing (0.9376 → 0.9358).
+- The same stand-in calibrates the value of an added pair against its precision (break-even ≈ 0.70). It shows France's band [0.93, 0.97) is only ~0.75 precise, so France stops at 0.93.
 - **Common false positives (wrong merges):**
   - Generated branches that change a category word at the same address ("Rayon Comite SAS" vs "Rayon Musique SAS").
   - Branches that add a qualifier the model has not seen.
