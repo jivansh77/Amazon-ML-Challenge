@@ -575,3 +575,14 @@ Baseline for unseen India with the model alone: 0.9332 (thr 0.9).
 | No dense features | 0.9350 | 0.9553 |
 
 US is unchanged. Rejected.
+
+### Stand-in: per-country quantile route scores (`ber-us-cnorm`)
+
+| Unseen India | Model alone | + US-only CE (w 0.7) |
+|---|---|---|
+| Base | 0.9332 | 0.9565 |
+| Country-normalised | 0.9351 | 0.9539 |
+
+US is unchanged. Rejected: the CE already carries the transferable signal.
+
+**AWS (26 Sep):** SageMaker and EC2 GPU quotas are 0 in all 7 regions checked. Increase requests (1 each, us-east-1) are PENDING for ml.g6e.xlarge, ml.g6e.12xlarge, ml.g5.2xlarge, ml.g5.12xlarge and ml.p4d.24xlarge training jobs. `scripts/llm_ce.py` (LoRA Qwen2.5 pair classifier) is ready for them.
