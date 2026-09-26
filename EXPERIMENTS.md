@@ -546,3 +546,23 @@ New safe upload `dec_cebase2_frv2_frce_fr93`:
 - Validation-band AUC falls from 0.9545 to 0.9504, the usual adaptation cost on US/India.
 - On France its bands nearly match the small French CE. At 0.93 the kept pairs differ by only ~6.5k of 800k (0.8%).
 - Expected LB effect is about ±0.0001, so France keeps the LB-tested small French CE.
+
+## Why France scores lower: compressed embedding neighbourhoods
+
+Dense top-6 neighbours per S1 (test), median gaps in dense score:
+
+| | rank 1 − rank 4 | rank 4 − rank 6 |
+|---|---|---|
+| US | 0.031 | 0.023 |
+| India | 0.033 | 0.014 |
+| **France** | 0.028 | **0.009** |
+
+Training has 0.041 / 0.020 (US) and 0.039 / 0.011 (India). French generic names ("Lille Club", "Lille Amicale") crowd together in e5 space.
+
+The strongest features are dense/route margins (rdense_score_margin_c, g_mix_margin_c), so a French true match looks less certain. Part of this is a scale shift, not real ambiguity.
+
+**Tests on the stand-in (CPU kernels):**
+- `ber-us-cnorm`: `--country_norm`, route scores as within-country quantiles before the margins are computed.
+- `ber-us-nodense`: `--drop_feats dense`, no dense-derived features.
+
+Baseline for unseen India with the model alone: 0.9332 (thr 0.9).
