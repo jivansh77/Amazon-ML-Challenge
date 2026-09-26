@@ -593,3 +593,6 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - **LLM cross-encoder**: Qwen2.5-7B-Instruct + LoRA r16 (bf16, sequence-classification head) on a Colab Pro A100 40GB,
   trained on the round-2 CE pairs (36 pairs/s, 150 min cap), scores the dec val band and the test band (dec ∪ France v2).
   `scripts/llm_ce.py` now scores in text-length order (little padding) and saves the adapter every 1500 steps.
+- **LB: `dec_cebase3_frv2_frce_fr90` = 0.984427** (previous best 0.983051). US/India use CE round 3 (val estimate about +0.0004);
+  France threshold 0.97 → 0.9 changed about 16.4k French S1, mostly by adding a second match. Implied precision of those
+  additions: about 0.85–0.9 (break-even about 0.73). The stand-in calibration (0.72–0.80) was too pessimistic.
