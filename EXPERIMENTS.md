@@ -424,3 +424,30 @@ After calibration:
 | Logit average (0.3–0.7) | 0.98663 | 0.98880 |
 
 The gain is ~+0.0001, within noise. The stage-2 model is saturated for this feature set, so the twin is not taken to test.
+
+## Bigger cross-encoder: multilingual-e5-base (`ber-ce-base`)
+
+- Training: 150-minute cap on a T4 at 193 pairs/s (1.74M pairs seen), lr 3e-5, same pairs as the small CE.
+- Scoring: validation band in 2 min, test band (1.39M) in 39 min.
+
+| AUC on dec's validation band | Stage-2 model | CE | Mean of the two |
+|---|---|---|---|
+| Small CE (e5-small) | 0.9651 | 0.9383 | 0.9708 |
+| **Base CE (e5-base)** | 0.9651 | **0.9453** | **0.9730** |
+
+**Blend F0.5 on clean dec validation** (CE-training S1 excluded):
+
+| Blend | Val F0.5 |
+|---|---|
+| Model alone | 0.98651 |
+| + small CE (w 0.6 / 0.7) | 0.98862 / 0.98873 |
+| **+ base CE (w 0.6, thr 0.8)** | **0.98905** |
+| Small + base three-way | ≤ 0.98902 |
+
+The optimum is flat for w in 0.6–0.65 and thresholds 0.75–0.8.
+
+**New probe set (all with the base CE; US/India identical across the five):**
+- `dec_cebase`, `dec_cebase_fr99`, `dec_cebase_fr93`, `dec_cebase_fr85`: the base CE for France too.
+- `dec_cebase_frv2_frce`: France uses v2 words + the French-adapted small CE.
+
+`dec_cebase` vs `dec_ce_percountry`: 98.3% of rows are identical.
