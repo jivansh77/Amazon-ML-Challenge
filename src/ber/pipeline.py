@@ -75,6 +75,25 @@ def stage_dense(split, work, k=20, dataset_dir=None, k_rev=0):
         log(split, "reverse dense candidates", r.shape)
 
 
+def stage_namerev(split, work, k=5, n_threads=4):
+    """Reverse name-only route for S2/S3 records WITHOUT an address: their top-k S1 by char 3-gram TF-IDF
+    on the name. Such records (3% of S2/S3) lose most of the full-text similarity and are the bulk of the
+    true matches that no other route retrieves (64% of those misses on validation)."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from .blocking import _topk_by_country
+    s1 = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=["name_clean", "country"])
+    s23 = pl.read_parquet(f"{work}/{split}_s23n.parquet", columns=["name_clean", "addr_clean", "country"])
+    emp = np.where((s23["addr_clean"].fill_null("") == "").to_numpy())[0]
+    vf = lambda: TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 3), min_df=2, sublinear_tf=True, dtype=np.float32)
+    q_text = s23["name_clean"].fill_null("").gather(emp).to_list()
+    r = _topk_by_country(q_text, s23["country"].gather(emp).to_numpy(), s1["name_clean"].fill_null("").to_list(),
+                         s1["country"].to_numpy(), vf, k, n_threads)
+    r = pl.DataFrame({"qi": r["ci"].cast(pl.Int32), "ci": pl.Series(emp[r["qi"].to_numpy()]).cast(pl.Int32),
+                      "rname_score": r["score"], "rname_rank": r["rank"].cast(pl.Float32)})
+    r.write_parquet(f"{work}/{split}_name_rev.parquet")
+    log(split, "reverse name route:", len(emp), "records without address ->", r.height, "pairs")
+
+
 def add_second_best(df, col, grp, name):
     """Margin of `col` over the best *other* value in group `grp` (positive only for the top one)."""
     g = (df.group_by(grp).agg(pl.col(col).max().alias("_m1"),
@@ -87,14 +106,14 @@ def add_second_best(df, col, grp, name):
 
 
 ROUTES = [("tok", "tok_score", "tok_rank"), ("key", "key_score", "key_rank"), ("dense", "dense_score", "dense_rank"),
-          ("rdense", "rdense_score", "rdense_rank")]
+          ("rdense", "rdense_score", "rdense_rank"), ("rname", "rname_score", "rname_rank")]
 
 
 def load_candidates(split, work, caps, keep_qi=None, drop_qi=None, dup_mask=None, dup_near=10):
     """Union of all available routes, pruned by per-route rank caps, with global context
     features computed on blocking scores (cheap, and identical at train and test time)."""
     cand = pl.read_parquet(f"{work}/{split}_cand.parquet")
-    for f in ["dense", "dense_rev"]:
+    for f in ["dense", "dense_rev"] + (["name_rev"] if caps.get("rname") else []):
         if os.path.exists(f"{work}/{split}_{f}.parquet"):
             cand = cand.join(pl.read_parquet(f"{work}/{split}_{f}.parquet"), on=["qi", "ci"], how="full", coalesce=True)
     if drop_qi is not None:
