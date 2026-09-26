@@ -451,3 +451,12 @@ The optimum is flat for w in 0.6–0.65 and thresholds 0.75–0.8.
 - `dec_cebase_frv2_frce`: France uses v2 words + the French-adapted small CE.
 
 `dec_cebase` vs `dec_ce_percountry`: 98.3% of rows are identical.
+
+## LB 26 Sep
+
+| Upload | Public LB |
+|---|---|
+| `dec_cebase` (dec + e5-base CE, US/IN 0.80, FR 0.97) | **0.982855** |
+| Previous best (big_percountry) | 0.975703 |
+
+The gain is +0.0072. If US/India score their validation 0.989 on test, France is at about 0.92, so it is still the weak spot.
