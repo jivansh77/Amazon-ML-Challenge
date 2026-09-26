@@ -126,6 +126,13 @@ def load_candidates(split, work, caps, keep_qi=None, drop_qi=None, dup_mask=None
     cand = cand.with_columns([pl.col(sc).fill_null(0.0) for _, sc, _ in routes] +
                              [pl.col(rk).fill_null(999.0) for _, _, rk in routes] +
                              ([pl.col("key_n").fill_null(0.0)] if extra else []))
+    if COUNTRY_NORM:
+        # retrieval-score scales depend on the language (French neighbourhoods are ~2.5x more compressed in
+        # embedding space): express every route score as its quantile among the pairs of the same country
+        ctry = pl.read_parquet(f"{work}/{split}_s1n.parquet", columns=["country"])["country"]
+        cand = cand.with_columns(ctry.gather(cand["qi"]).alias("_c"))
+        cand = cand.with_columns([(pl.col(sc).rank("average").over("_c") / pl.len().over("_c")).cast(pl.Float32).alias(sc)
+                                  for _, sc, _ in routes]).drop("_c")
     cand = context_features(cand, [sc for _, sc, _ in routes])
     for _, sc, _ in routes:
         cand = add_second_best(cand, sc, "ci", f"{sc}_margin_c")
@@ -157,6 +164,7 @@ def load_candidates(split, work, caps, keep_qi=None, drop_qi=None, dup_mask=None
 
 _SPACES = {}
 GLOBAL_SIMS = False   # set by run.py --global_sims
+COUNTRY_NORM = False  # set by run.py --country_norm
 
 
 def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_000):
@@ -189,9 +197,12 @@ def iter_pair_tables(split, work, cand, s1_filter=None, n_jobs=4, chunk_s1=250_0
         yield t
 
 
+DROP_FEATS = []      # set by run.py --drop_feats: feature names containing any of these substrings are not used
+
+
 def feature_columns(tab):
     drop = {"qi", "ci", "cr", "s1", "m", "country", "y", "fold", "p", "is_val"}
-    return [c for c in tab.columns if c not in drop]
+    return [c for c in tab.columns if c not in drop and not any(k in c for k in DROP_FEATS)]
 
 
 def decode(pairs, thr, excl=True):

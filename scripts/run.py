@@ -69,6 +69,8 @@ ap.add_argument("--pseudo_scores", default=None,
 ap.add_argument("--st_hi", type=float, default=0.99)
 ap.add_argument("--st_lo", type=float, default=0.05)
 ap.add_argument("--st_weight", type=float, default=1.0)
+ap.add_argument("--country_norm", action="store_true", help="route scores as within-country quantiles")
+ap.add_argument("--drop_feats", default="", help="comma-separated substrings: features containing them are not used")
 ap.add_argument("--swap_ab", action="store_true",
                 help="stage 1 on the usual stage-2 slice and stage 2 on the usual stage-1 slice (a second, diverse model); "
                      "also scores the usual model's validation S1 into val_scores_other.parquet so the two can be averaged")
@@ -98,6 +100,8 @@ if a.reuse:
 dd = find_dataset_dir(a.data)
 import ber.pipeline as _bp
 _bp.GLOBAL_SIMS = a.global_sims
+_bp.COUNTRY_NORM = a.country_norm
+_bp.DROP_FEATS = [x for x in a.drop_feats.split(",") if x]
 
 SPLITS = a.splits.split(",")
 if "norm" in stages:
@@ -476,7 +480,7 @@ if "train" in stages:
     cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS,
                 "s2_topk": a.s2_topk, "s2_minp": a.s2_minp, "triangle": a.triangle, "decoy_feats": a.decoy_feats,
                 "dup_decoys": a.dup_decoys,
-                "global_sims": a.global_sims})
+                "global_sims": a.global_sims, "country_norm": a.country_norm})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
 if "dump" in stages:
@@ -555,6 +559,7 @@ if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
     a.model = cfg.get("model", "lgb")
     _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims   # must match training
+    _bp.COUNTRY_NORM = cfg.get("country_norm", False) or a.country_norm
     if cfg.get("decoy_feats"):
         load_decoy_odds()
     bst = load_model("model", a.model)
