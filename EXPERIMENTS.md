@@ -618,3 +618,15 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   51,936 new French band pairs were scored locally on CPU instead.
 - **LB: `nr_cebase3_frce_fr87` = 0.98553** (previous best 0.984515, +0.00102). The reverse-name route is the
   largest single LB gain since the cross-encoder; the LB gain exceeds the val gain (+0.00057).
+
+## France generator rules (Kavya's label-free finding, 27 Sep)
+- France true matches change the house number ~1% (US 12%, India 24%); French noise suffixes (fils, groupe,
+  developpement, associes) were systematically rejected (train word odds call them decoys, -4 to -7).
+- **LB: `nr_fr87_kv_HN_A` = 0.986665** (+0.00114 over 0.98553): +25,063 suffix pairs with the house number kept,
+  -3,943 claimed pairs with a changed number and blend < 0.998 (faithful port of her `sh-hn` kernel).
+- After the fix France has 3.21 predicted matches per S1 vs US 3.38 / India 3.35 (generator is country-invariant):
+  ~42k matches still missing. The largest unclaimed class keeps the house number 89-99% (like matches) with
+  organisation words (club, comite, amicale, ecole, union...); in labelled US/India val, organisation words added at
+  the same number are matches ~100% (association, society, council, federation...), pure decoy words
+  (enterprises, trading, ventures) are 0% even with the number kept.
+- Probes: `kv_HN_A_C1` (+23,829 pairs, 46 organisation words, France -> 3.30/S1), `kv_HN_A_C2france` (+5,424 '+france').
