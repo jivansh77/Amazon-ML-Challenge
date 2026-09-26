@@ -24,6 +24,7 @@ ap.add_argument("--train_min", type=float, default=240)
 ap.add_argument("--score_only", default=None, help="dir with a saved adapter: skip training")
 ap.add_argument("--init_adapter", default=None, help="continue training from a saved adapter (after a lost VM)")
 ap.add_argument("--skip_pairs", type=int, default=0, help="skip the first N shuffled training pairs (already seen)")
+ap.add_argument("--stop_at", default=None, help="UTC wall-clock time (e.g. 2026-09-27T12:30) to stop training and start scoring")
 ap.add_argument("--save_every", type=int, default=1500, help="save the adapter every N steps (sessions can die)")
 ap.add_argument("--score_bs", type=int, default=128)
 ap.add_argument("--parts", default="val_band,test_band")
@@ -98,7 +99,8 @@ if not a.score_only:
         run = 0.98 * run + 0.02 * loss.item()
         if step % 200 == 0:
             log(f"step {step}/{n_steps} loss {run:.4f} {a.bs * world * (step + 1) / (time.time() - t):.0f} pairs/s")
-        stop = torch.tensor([time.time() - t > a.train_min * 60], device="cuda")
+        late = a.stop_at and time.time() > __import__("calendar").timegm(time.strptime(a.stop_at, "%Y-%m-%dT%H:%M"))
+        stop = torch.tensor([time.time() - t > a.train_min * 60 or bool(late)], device="cuda")
         if ddp:
             dist.all_reduce(stop, op=dist.ReduceOp.MAX)
         if stop.item():
