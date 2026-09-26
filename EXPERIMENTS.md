@@ -611,3 +611,8 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - Blocking recall 0.9849 -> **0.9888**, oracle F0.5 0.9953 -> **0.9964**.
 - Clean val (94,236 common S1): model alone 0.98649 -> **0.98696**; + e5-base CE round 3 (w 0.6)
   0.98950 -> **0.99003**, with CE scores on only 73% of the new band so far.
+- Full CE coverage (AWS job's e5-base round-3 scores on the new band): clean val **0.99007** (old 0.98950, +0.00057).
+- New upload `nr_cebase3_frce_fr87` (+ `candidate_pairs_nr.tsv`, 4.26 per S1): same recipe as the fr87 best
+  (w 0.6, US/India 0.8, France 0.87 with calibrated French words + French CE); ~48k S1 differ, mostly added matches.
+- The AWS job's last step (French CE) failed on a tokenizer saved by transformers 5.0 vs 4.57.1 in the job; the
+  51,936 new French band pairs were scored locally on CPU instead.
