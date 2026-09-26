@@ -566,3 +566,12 @@ The strongest features are dense/route margins (rdense_score_margin_c, g_mix_mar
 - `ber-us-nodense`: `--drop_feats dense`, no dense-derived features.
 
 Baseline for unseen India with the model alone: 0.9332 (thr 0.9).
+
+### Stand-in: no dense features (`ber-us-nodense`)
+
+| Unseen India | Model alone | + US-only CE (w 0.7) |
+|---|---|---|
+| Base | 0.9332 | 0.9565 |
+| No dense features | 0.9350 | 0.9553 |
+
+US is unchanged. Rejected.
