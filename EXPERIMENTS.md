@@ -477,3 +477,18 @@ US itself barely moves (0.9880 → 0.9876).
 - Adding the base CE (which did see India, so this is optimistic; only 16% of the band has CE scores): 0.936 → 0.951 at w 0.6 and 0.952 at w 0.4. More CE weight helps an unseen country.
 
 Next: `ber-usonly-st` tests `--self_train`, i.e. pseudo-labels on India from the US-only stage 2 and a refit.
+
+### Self-training on the stand-in (`ber-usonly-st`): no gain
+
+- Pseudo-labels on 715k India S1 outside validation: 2.46M pairs, 97.8% accurate against the hidden labels.
+- Stage 2 was refit on US labels plus India pseudo-labels.
+
+| | Best F0.5 |
+|---|---|
+| India, base | 0.9376 (thr 0.9) |
+| India, self-trained | 0.9358 (thr 0.95) |
+| US | unchanged |
+
+Confident pseudo-labels teach nothing about the uncertain pairs (confirmation bias), so `ber-selftrain-fr` is not used for France.
+
+**Next:** a US-only cross-encoder (`ber-ceus-train`, e5-small) scores the stand-in's validation band (442k pairs). This gives an honest measure of how much a CE, and which blend weight, helps an unseen country.
