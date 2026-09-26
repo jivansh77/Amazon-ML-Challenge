@@ -411,3 +411,16 @@ After calibration:
 - US/India are identical in all three.
 - Candidate file: `candidate_pairs_dec_frv2.tsv` (4.13 per S1).
 - Both files replace the v1 France files in the upload plan.
+
+## Swapped-slice twin (`ber-decswap-train`, `--swap_ab`): no gain
+
+- Stage 1 trained on dec's stage-2 slice and stage 2 on dec's stage-1 slice.
+- The first run ran out of memory while scoring all training pairs with stage 1; `--chunk_s1 90000` fixed it.
+- Its own validation: 0.9859. Averaged with dec on dec's 94k clean validation S1:
+
+| | No CE | + CE (w 0.7) |
+|---|---|---|
+| dec alone | 0.98651 | 0.98873 |
+| Logit average (0.3–0.7) | 0.98663 | 0.98880 |
+
+The gain is ~+0.0001, within noise. The stage-2 model is saturated for this feature set, so the twin is not taken to test.
