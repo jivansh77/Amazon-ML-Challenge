@@ -616,3 +616,5 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   (w 0.6, US/India 0.8, France 0.87 with calibrated French words + French CE); ~48k S1 differ, mostly added matches.
 - The AWS job's last step (French CE) failed on a tokenizer saved by transformers 5.0 vs 4.57.1 in the job; the
   51,936 new French band pairs were scored locally on CPU instead.
+- **LB: `nr_cebase3_frce_fr87` = 0.98553** (previous best 0.984515, +0.00102). The reverse-name route is the
+  largest single LB gain since the cross-encoder; the LB gain exceeds the val gain (+0.00057).
