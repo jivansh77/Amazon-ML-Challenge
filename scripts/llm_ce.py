@@ -34,6 +34,7 @@ if not a.score_only and os.path.exists(f"{a.work}/train_done"):     # resumed af
     a.score_only = f"{a.work}/adapter"
 
 ddp = "LOCAL_RANK" in os.environ
+torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))      # before NCCL init: no stray contexts on GPU 0
 if ddp:
     import datetime
     dist.init_process_group("nccl", timeout=datetime.timedelta(hours=3))    # ranks wait for each other's chunks
