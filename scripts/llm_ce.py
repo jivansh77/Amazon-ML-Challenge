@@ -22,6 +22,9 @@ ap.add_argument("--maxlen", type=int, default=160)
 ap.add_argument("--lora_r", type=int, default=16)
 ap.add_argument("--train_min", type=float, default=240)
 ap.add_argument("--score_only", default=None, help="dir with a saved adapter: skip training")
+ap.add_argument("--save_every", type=int, default=1500, help="save the adapter every N steps (sessions can die)")
+ap.add_argument("--score_bs", type=int, default=128)
+ap.add_argument("--parts", default="val_band,test_band")
 a = ap.parse_args()
 
 ddp = "LOCAL_RANK" in os.environ
@@ -56,6 +59,9 @@ else:
     cfg = LoraConfig(r=a.lora_r, lora_alpha=2 * a.lora_r, lora_dropout=0.05, task_type="SEQ_CLS",
                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
     model = get_peft_model(model, cfg)
+    for q in model.parameters():                 # trainable adapter + head in fp32, frozen base in bf16
+        if q.requires_grad:
+            q.data = q.data.float()
 model = model.cuda()
 
 if not a.score_only:
@@ -87,22 +93,31 @@ if not a.score_only:
             dist.all_reduce(stop, op=dist.ReduceOp.MAX)
         if stop.item():
             log(f"time cap at step {step}"); break
+        if rank == 0 and step and step % a.save_every == 0:
+            model.save_pretrained(f"{a.work}/adapter")
     if rank == 0:
         model.save_pretrained(f"{a.work}/adapter"); tok.save_pretrained(f"{a.work}/adapter")
 model.eval()
 
 
 @torch.no_grad()
-def score(df, bs=64):
-    x, y, out = df["a"].to_list(), df["b"].to_list(), []
-    for i in range(0, len(x), bs):
-        e = enc(x[i:i + bs], y[i:i + bs]).to("cuda")
+def score(df, bs=None):
+    """Scores in order of text length (little padding), returned in the input order."""
+    bs = bs or a.score_bs
+    x, y = df["a"].to_list(), df["b"].to_list()
+    order = np.argsort([len(u) + len(v) for u, v in zip(x, y)], kind="stable")
+    out = np.zeros(len(x), np.float32); t = time.time()
+    for k, i in enumerate(range(0, len(x), bs)):
+        j = order[i:i + bs]
+        e = enc([x[q] for q in j], [y[q] for q in j]).to("cuda")
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            out.append(torch.sigmoid(model(**e).logits.squeeze(-1).float()).cpu().numpy())
-    return np.concatenate(out) if out else np.zeros(0, np.float32)
+            out[j] = torch.sigmoid(model(**e).logits.squeeze(-1).float()).cpu().numpy()
+        if k % 500 == 0:
+            log(f"scored {i}/{len(x)} {i / (time.time() - t + 1e-9):.0f} pairs/s")
+    return out
 
 
-for name in ["val_band", "test_band"]:
+for name in a.parts.split(","):
     fs = glob.glob(os.path.join(a.ce_data, "**", f"{name}.parquet"), recursive=True)
     if not fs:
         continue

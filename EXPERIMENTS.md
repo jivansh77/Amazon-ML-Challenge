@@ -586,3 +586,10 @@ US is unchanged. Rejected.
 US is unchanged. Rejected: the CE already carries the transferable signal.
 
 **AWS (26 Sep):** SageMaker and EC2 GPU quotas are 0 in all 7 regions checked. Increase requests (1 each, us-east-1) are PENDING for ml.g6e.xlarge, ml.g6e.12xlarge, ml.g5.2xlarge, ml.g5.12xlarge and ml.p4d.24xlarge training jobs. `scripts/llm_ce.py` (LoRA Qwen2.5 pair classifier) is ready for them.
+
+## 26 Sep: importance weighting, CE round 3, LLM cross-encoder on Colab A100
+- **Importance weighting (ber-us-iw)** on the unseen-India stand-in: model 0.9337 (base 0.9332), with the US-only CE 0.9525 (base 0.9565). Rejected.
+- **CE round 3 (e5-base continued on ce-data3)**: band AUC 0.9567 (round 2: 0.9544); clean val F0.5 with w=0.6: 0.98952 vs 0.98942 for round 2. Blending rounds 2 and 3 does not help (0.9893).
+- **LLM cross-encoder**: Qwen2.5-7B-Instruct + LoRA r16 (bf16, sequence-classification head) on a Colab Pro A100 40GB,
+  trained on the round-2 CE pairs (36 pairs/s, 150 min cap), scores the dec val band and the test band (dec ∪ France v2).
+  `scripts/llm_ce.py` now scores in text-length order (little padding) and saves the adapter every 1500 steps.
