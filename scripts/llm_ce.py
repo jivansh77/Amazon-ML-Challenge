@@ -22,6 +22,7 @@ ap.add_argument("--maxlen", type=int, default=160)
 ap.add_argument("--lora_r", type=int, default=16)
 ap.add_argument("--train_min", type=float, default=240)
 ap.add_argument("--score_only", default=None, help="dir with a saved adapter: skip training")
+ap.add_argument("--init_adapter", default=None, help="continue training from a saved adapter (after a lost VM)")
 ap.add_argument("--save_every", type=int, default=1500, help="save the adapter every N steps (sessions can die)")
 ap.add_argument("--score_bs", type=int, default=128)
 ap.add_argument("--parts", default="val_band,test_band")
@@ -60,7 +61,8 @@ if a.score_only:
 else:
     cfg = LoraConfig(r=a.lora_r, lora_alpha=2 * a.lora_r, lora_dropout=0.05, task_type="SEQ_CLS",
                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
-    model = get_peft_model(model, cfg)
+    model = (PeftModel.from_pretrained(model, a.init_adapter, is_trainable=True) if a.init_adapter
+             else get_peft_model(model, cfg))
     for q in model.parameters():                 # trainable adapter + head in fp32, frozen base in bf16
         if q.requires_grad:
             q.data = q.data.float()
