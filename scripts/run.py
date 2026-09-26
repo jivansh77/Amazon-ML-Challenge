@@ -58,6 +58,9 @@ ap.add_argument("--decoy_feats", action="store_true", help="decoy-signature feat
 ap.add_argument("--dup_decoys", action="store_true", help="duplicate near decoy candidates in training (test-like decoy density)")
 ap.add_argument("--dup_near", type=int, default=10, help="only duplicate decoys within this route rank of the S1")
 ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
+ap.add_argument("--train_countries", default=None,
+                help="train both stages and the decoy odds only on these countries (comma-separated); validation keeps "
+                     "every country, so the others act as labelled 'unseen countries' (a stand-in for France)")
 ap.add_argument("--swap_ab", action="store_true",
                 help="stage 1 on the usual stage-2 slice and stage 2 on the usual stage-1 slice (a second, diverse model); "
                      "also scores the usual model's validation S1 into val_scores_other.parquet so the two can be averaged")
@@ -352,8 +355,12 @@ if "train" in stages:
     if a.drop_s1 > 0:
         log("dropping", int(drop.sum()), "S1 to simulate test density")
     ids_all = s1.rename({"entity_id": "s1"}).filter(pl.Series(~drop))
+    cmask = np.ones(len(h), bool)
+    if a.train_countries:
+        cmask = s1["country"].is_in(a.train_countries.split(",")).to_numpy()
+        log("training countries:", a.train_countries, "S1:", int(cmask.sum()))
     if a.decoy_feats:
-        fit_decoy_odds((h >= 900) & ~drop, edges)        # held-out 10% slice, never used by A / B / use
+        fit_decoy_odds((h >= 900) & ~drop & cmask, edges)        # held-out 10% slice, never used by A / B / use
     dupm = None
     if a.dup_decoys:
         s23i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"]
@@ -377,6 +384,10 @@ if "train" in stages:
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
+        if a.train_countries:     # training rows only from the training countries; validation S1 of every country
+            isv = s1.select(is_val("entity_id"))["entity_id"].to_numpy()
+            A = A & cmask
+            B = B & (cmask | isv)
         XV = None
         if a.swap_ab:
             XV = B & s1.select(is_val("entity_id"))["entity_id"].to_numpy()     # the usual model's validation S1
