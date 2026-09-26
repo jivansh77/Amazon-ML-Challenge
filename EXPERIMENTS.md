@@ -461,3 +461,19 @@ The optimum is flat for w in 0.6–0.65 and thresholds 0.75–0.8.
 
 The gain is +0.0072. If US/India score their validation 0.989 on test, France is at about 0.92, so it is still the weak spot.
 | `dec_cebase_frv2_frce` (France: v2 words + French CE, FR 0.97) | **0.983051** (+0.0002 vs baseline, France only) |
+
+## Unseen-country stand-in: train on US only, validate on India (`ber-usonly-train`)
+
+| India validation, 37,437 S1 | Best F0.5 | Best threshold |
+|---|---|---|
+| dec (trained with India labels) | 0.984 | 0.70 |
+| **US-only model** | **0.936** | 0.85–0.90 (flat 0.80–0.93) |
+
+US itself barely moves (0.9880 → 0.9876).
+
+- An unseen country loses ~5 points, consistent with France's implied LB F0.5 of ~0.92. Its best threshold also rises, as the France probes showed.
+- Errors at the best threshold: FP 5.6k vs 0.6k (9×), FN 10.7k vs 5.0k (2×).
+- The band is huge: 4.5 pairs per S1 in 0.02–0.998, against 0.75 when India is seen. India is a harsher stand-in than France (Indic scripts).
+- Adding the base CE (which did see India, so this is optimistic; only 16% of the band has CE scores): 0.936 → 0.951 at w 0.6 and 0.952 at w 0.4. More CE weight helps an unseen country.
+
+Next: `ber-usonly-st` tests `--self_train`, i.e. pseudo-labels on India from the US-only stage 2 and a refit.
