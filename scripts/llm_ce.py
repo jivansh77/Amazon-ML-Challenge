@@ -30,6 +30,8 @@ ap.add_argument("--parts", default="val_band,test_band")
 ap.add_argument("--chunk", type=int, default=100_000, help="score in chunks of this many pairs; finished chunks are kept "
                                                          "and skipped on a rerun (Colab VMs can disappear)")
 a = ap.parse_args()
+if not a.score_only and os.path.exists(f"{a.work}/train_done"):     # resumed after training finished: score only
+    a.score_only = f"{a.work}/adapter"
 
 ddp = "LOCAL_RANK" in os.environ
 if ddp:
@@ -102,8 +104,11 @@ if not a.score_only:
             log(f"time cap at step {step}"); break
         if rank == 0 and step and step % a.save_every == 0:
             model.save_pretrained(f"{a.work}/adapter")
+            with open(f"{a.work}/progress.json", "w") as fp:        # pairs seen, for a resume after a lost machine
+                fp.write('{"pairs_seen": %d}' % (a.skip_pairs + (step + 1) * a.bs * world))
     if rank == 0:
         model.save_pretrained(f"{a.work}/adapter"); tok.save_pretrained(f"{a.work}/adapter")
+        open(f"{a.work}/train_done", "w").write("1")
 model.eval()
 
 
