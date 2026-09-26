@@ -528,3 +528,15 @@ Break-even is ~0.68–0.70.
 - The fr93 LB gain per added pair was +0.0175 (16,372 pairs). On this scale France's [0.93, 0.97) band is only ~0.72–0.80 precise.
 - France is more decided (4× fewer mid-band pairs than the stand-in) but less precise at a given score.
 - [0.90, 0.93) is therefore at or below break-even: keep France at 0.93.
+
+## Base CE continued on fresh S1 (`ber-ce-base2`)
+
+- Setup: 2.02M new pairs from 160k training S1 never seen by any CE, lr 2e-5.
+- Validation-band AUC: 0.9545 (base 0.9453).
+- Clean-validation blend: **0.98934** at w 0.6 / thr 0.8, and 0.98942 at thr 0.75. Base was 0.98905.
+
+New safe upload `dec_cebase2_frv2_frce_fr93`:
+- France is identical to `dec_cebase_frv2_frce_fr93` (calibrated words + French CE, 0.93).
+- US/India use base2; 99.1% of their rows are unchanged.
+
+`ber-cefr-base2` adapts base2 to France (pseudo pairs + 5% fresh pairs, 40 min).
