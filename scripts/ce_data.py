@@ -25,6 +25,8 @@ ap.add_argument("--work", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--parts", default="train,val,test")
 ap.add_argument("--n_s1", type=int, default=160_000)
+ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--exclude_s1", default=None, help="parquet(s) with an s1 column: S1 a previous cross-encoder trained on")
 ap.add_argument("--lo", type=float, default=0.02)
 ap.add_argument("--hi", type=float, default=0.998)
 ap.add_argument("--skip_scored", default=None, help="test: leave out pairs already in this ce_test.parquet")
@@ -58,8 +60,11 @@ if "train" in parts or "val" in parts:
     if "train" in parts:
         s1n = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id"])["entity_id"]
         s23n = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"]
-        free = np.where(~s1n.is_in(va["s1"].unique().implode()).to_numpy())[0]    # never a validation S1
-        pick = pl.Series(np.random.default_rng(0).choice(free, min(a.n_s1, len(free)), replace=False)).cast(pl.Int32)
+        taken = va["s1"].unique()                                                  # never a validation S1
+        for f in (a.exclude_s1.split(",") if a.exclude_s1 else []):
+            taken = pl.concat([taken, pl.read_parquet(f, columns=["s1"])["s1"]])
+        free = np.where(~s1n.is_in(taken.implode()).to_numpy())[0]
+        pick = pl.Series(np.random.default_rng(a.seed).choice(free, min(a.n_s1, len(free)), replace=False)).cast(pl.Int32)
 
         def route(f, rk, cap):
             path = f"{a.work}/train_{f}.parquet"
