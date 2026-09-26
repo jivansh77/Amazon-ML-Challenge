@@ -630,3 +630,24 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   the same number are matches ~100% (association, society, council, federation...), pure decoy words
   (enterprises, trading, ventures) are 0% even with the number kept.
 - Probes: `kv_HN_A_C1` (+23,829 pairs, 46 organisation words, France -> 3.30/S1), `kv_HN_A_C2france` (+5,424 '+france').
+- **LB: `kv_HN_A_C1` = 0.983453** (-0.0032): the organisation-word adds are decoys in France (category swap at the
+  same number). Removing the 1,319 already-claimed category-swap pairs is the consistent follow-up (`kv_D`,
+  est. +0.00015, not submitted).
+
+## France-supervised cross-encoder (AWS `ml.g5.2xlarge`, e5-large, US/India + LB-confirmed France classes)
+- Trained on 693,557 pairs; France pseudo-val = 25,144 LB-confirmed suffix matches + 24,288 category-swap decoys,
+  with the words groupe / club / ecole / amicale held out.
+- AUC on training words 1.000, on **held-out words 0.069** (inverted, like the self-trained French CE 0.059);
+  US/India val band 0.9481 vs e5-base round 3 0.9526. It only memorises the word lists the rules already
+  apply. Rejected.
+
+## France noise profile (edit signatures, label-free)
+- 35 noise ops (legal form kept/dropped/added/swapped, name typo/abbreviation/drop/add/reorder, case, junk,
+  empty address, house number, street words, address components) on 380k US/India val pairs and 932k France
+  candidates; France confident rate bias-corrected by the US/India confident/true ratio.
+- Apparent France differences (name typos 1.1% vs 5.6%, empty address 0.3% vs 4%) are the model's own bias:
+  the claimed-band France typo pairs are plain OCR-noise matches ("Loisrs", "Shotkan"). Legal-form swap (0.09%
+  vs 1.7-19%) touches only ~380 claimed-band pairs. No new rule.
+- Empty-address records whose name equals 2+ S1 names are true matches 98.5% in train but claimed ~0% in test
+  (every country): chains with orphan copies (test has 5.76 records per S1 vs 4.67 in train), undecidable;
+  matches per S1 per source are spread (1+1 12%, 1+2 11%, 2+1 10%...), so counts cannot disambiguate.
