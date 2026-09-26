@@ -593,3 +593,28 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - **LLM cross-encoder**: Qwen2.5-7B-Instruct + LoRA r16 (bf16, sequence-classification head) on a Colab Pro A100 40GB,
   trained on the round-2 CE pairs (36 pairs/s, 150 min cap), scores the dec val band and the test band (dec ∪ France v2).
   `scripts/llm_ce.py` now scores in text-length order (little padding) and saves the adapter every 1500 steps.
+- **LB: `dec_cebase3_frv2_frce_fr90` = 0.984427** (previous best 0.983051). US/India use CE round 3 (val estimate about +0.0004);
+  France threshold 0.97 → 0.9 changed about 16.4k French S1, mostly by adding a second match. Implied precision of those
+  additions: about 0.85–0.9 (break-even about 0.73). The stand-in calibration (0.72–0.80) was too pessimistic.
+- **LB: `dec_cebase3_frv2_frce_fr87` = 0.984515** (fr90: 0.984427). 3,092 French rows changed; implied precision of the
+  0.87–0.9 additions about 0.80 (0.9–0.97: about 0.85–0.9; break-even 0.73). Further lowering is near break-even.
+- **Qwen2.5-7B LoRA, 217k pairs (Colab A100, 100 min):** val band AUC 0.930 (e5-base round 3: 0.957); every blend
+  lowers clean val (best 0.98940 vs 0.98952). Too little training; rerun on all 2.2M pairs on AWS 4x L40S.
+- **Qwen test-set cut** (score only pairs with model+e5 blend in [0.05, 0.995)): identical val F0.5 to scoring all.
+
+## Reverse-name route for records without an address (AWS `ml.g5.12xlarge`, full pipeline)
+- Validation misses: 72% of the remaining F0.5 loss is "S1 with some true matches missing"; ~half of the missed
+  true pairs were never candidates, and 64% of those are S2/S3 records with an EMPTY address (3.3% of records).
+- `namerev` stage: for every S2/S3 record without an address, top-5 S1 by char 3-gram TF-IDF on the name
+  (same country); offline recall of those misses: 53% at 5, 58% at 10. Route pairs keep full context features
+  (the Kaggle run with them was OOM-killed at 82M pairs; the AWS machine has 192 GB).
+- Blocking recall 0.9849 -> **0.9888**, oracle F0.5 0.9953 -> **0.9964**.
+- Clean val (94,236 common S1): model alone 0.98649 -> **0.98696**; + e5-base CE round 3 (w 0.6)
+  0.98950 -> **0.99003**, with CE scores on only 73% of the new band so far.
+- Full CE coverage (AWS job's e5-base round-3 scores on the new band): clean val **0.99007** (old 0.98950, +0.00057).
+- New upload `nr_cebase3_frce_fr87` (+ `candidate_pairs_nr.tsv`, 4.26 per S1): same recipe as the fr87 best
+  (w 0.6, US/India 0.8, France 0.87 with calibrated French words + French CE); ~48k S1 differ, mostly added matches.
+- The AWS job's last step (French CE) failed on a tokenizer saved by transformers 5.0 vs 4.57.1 in the job; the
+  51,936 new French band pairs were scored locally on CPU instead.
+- **LB: `nr_cebase3_frce_fr87` = 0.98553** (previous best 0.984515, +0.00102). The reverse-name route is the
+  largest single LB gain since the cross-encoder; the LB gain exceeds the val gain (+0.00057).

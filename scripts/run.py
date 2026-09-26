@@ -30,6 +30,8 @@ ap.add_argument("--k_tok", type=int, default=30)
 ap.add_argument("--k_dense", type=int, default=20)
 ap.add_argument("--k_rev", type=int, default=0, help="dense stage: also keep top-k S1 per S2/S3 record")
 ap.add_argument("--cap_rdense", type=int, default=0)
+ap.add_argument("--k_namerev", type=int, default=5, help="namerev stage: top-k S1 per S2/S3 record without address")
+ap.add_argument("--cap_rname", type=int, default=0, help="keep reverse-name route pairs up to this rank (0 = route off)")
 ap.add_argument("--splits", default="train,test", help="splits for the norm/block/dense stages")
 ap.add_argument("--routes", default="tok,key")
 ap.add_argument("--tok_max_df", type=float, default=0.01)
@@ -129,6 +131,11 @@ if "block" in stages:
           except Exception as ex:
             log("recall report skipped:", repr(ex))
 
+if "namerev" in stages:
+    from ber.pipeline import stage_namerev
+    for sp in SPLITS:
+        stage_namerev(sp, a.work, k=a.k_namerev)
+
 if "dense" in stages:
     for sp in SPLITS:
         if not os.environ.get("BER_DENSE_REPORT_ONLY"):     # (testing hook)
@@ -168,7 +175,7 @@ PARAMS = dict(objective="binary", learning_rate=0.05, num_leaves=127, min_data_i
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=1.0,
               verbose=-1, num_threads=a.jobs)
 
-CAPS = {"tok": a.cap_tok, "key": a.cap_key, "dense": a.cap_dense, "rdense": a.cap_rdense}
+CAPS = {"tok": a.cap_tok, "key": a.cap_key, "dense": a.cap_dense, "rdense": a.cap_rdense, "rname": a.cap_rname}
 
 def fit_lgb(X, y, isv, cols, tag, w=None):
     dtr = lgb.Dataset(X[~isv], y[~isv], weight=None if w is None else w[~isv], feature_name=cols, free_raw_data=True)

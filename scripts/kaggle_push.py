@@ -13,6 +13,7 @@ ap.add_argument("--slug", required=True)
 ap.add_argument("--args", default="")
 ap.add_argument("--entry", default="scripts/run.py")
 ap.add_argument("--gpu", action="store_true")
+ap.add_argument("--accelerator", default=None, help="e.g. NvidiaTeslaP100 or NvidiaTeslaT4 (default: Kaggle's choice)")
 ap.add_argument("--src-kernel", action="append", default=[])
 ap.add_argument("--user", default="jvmusic")
 ap.add_argument("--dataset", action="append", default=[], help="extra Kaggle datasets to mount")
@@ -45,4 +46,6 @@ meta = {"id": f"{a.user}/{a.slug}", "title": a.slug, "code_file": "main.py", "la
         "dataset_sources": [f"{a.user}/ml-challenge"] + a.dataset, "competition_sources": [],
         "kernel_sources": a.src_kernel}
 json.dump(meta, open(f"{kd}/kernel-metadata.json", "w"))
-print(subprocess.run(["kaggle", "kernels", "push", "-p", kd], capture_output=True, text=True).stdout)
+r = subprocess.run(["kaggle", "kernels", "push", "-p", kd] + (["--accelerator", a.accelerator] if a.accelerator else []),
+                   capture_output=True, text=True)
+print(r.stdout, r.stderr)

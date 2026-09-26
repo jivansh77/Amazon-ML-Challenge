@@ -22,14 +22,23 @@ ap.add_argument("--maxlen", type=int, default=160)
 ap.add_argument("--lora_r", type=int, default=16)
 ap.add_argument("--train_min", type=float, default=240)
 ap.add_argument("--score_only", default=None, help="dir with a saved adapter: skip training")
+ap.add_argument("--init_adapter", default=None, help="continue training from a saved adapter (after a lost VM)")
+ap.add_argument("--skip_pairs", type=int, default=0, help="skip the first N shuffled training pairs (already seen)")
+ap.add_argument("--stop_at", default=None, help="UTC wall-clock time (e.g. 2026-09-27T12:30) to stop training and start scoring")
 ap.add_argument("--save_every", type=int, default=1500, help="save the adapter every N steps (sessions can die)")
 ap.add_argument("--score_bs", type=int, default=128)
 ap.add_argument("--parts", default="val_band,test_band")
+ap.add_argument("--chunk", type=int, default=100_000, help="score in chunks of this many pairs; finished chunks are kept "
+                                                         "and skipped on a rerun (Colab VMs can disappear)")
 a = ap.parse_args()
+if not a.score_only and os.path.exists(f"{a.work}/train_done"):     # resumed after training finished: score only
+    a.score_only = f"{a.work}/adapter"
 
 ddp = "LOCAL_RANK" in os.environ
+torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))      # before NCCL init: no stray contexts on GPU 0
 if ddp:
-    dist.init_process_group("nccl")
+    import datetime
+    dist.init_process_group("nccl", timeout=datetime.timedelta(hours=3))    # ranks wait for each other's chunks
 rank = dist.get_rank() if ddp else 0
 world = dist.get_world_size() if ddp else 1
 dev = int(os.environ.get("LOCAL_RANK", 0))
@@ -58,7 +67,8 @@ if a.score_only:
 else:
     cfg = LoraConfig(r=a.lora_r, lora_alpha=2 * a.lora_r, lora_dropout=0.05, task_type="SEQ_CLS",
                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
-    model = get_peft_model(model, cfg)
+    model = (PeftModel.from_pretrained(model, a.init_adapter, is_trainable=True) if a.init_adapter
+             else get_peft_model(model, cfg))
     for q in model.parameters():                 # trainable adapter + head in fp32, frozen base in bf16
         if q.requires_grad:
             q.data = q.data.float()
@@ -68,7 +78,8 @@ if not a.score_only:
     files = [glob.glob(os.path.join(a.ce_data, "**", "train.parquet"), recursive=True)[0]]
     files += a.extra_train.split(",") if a.extra_train else []
     tr = pl.concat([pl.read_parquet(f, columns=["a", "b", "y"]) for f in files]).sample(fraction=1.0, shuffle=True, seed=0)
-    tr = tr.head(a.train_pairs)
+    tr = tr.slice(a.skip_pairs)
+    tr = tr.head(min(a.train_pairs, tr.height) // (world * a.bs) * (world * a.bs))   # equal steps on every rank
     tr = tr[rank::world]                                    # each rank its own shard
     A, B, Y = tr["a"].to_list(), tr["b"].to_list(), tr["y"].to_numpy().astype(np.float32)
     n_steps = len(A) // a.bs
@@ -88,15 +99,19 @@ if not a.score_only:
         run = 0.98 * run + 0.02 * loss.item()
         if step % 200 == 0:
             log(f"step {step}/{n_steps} loss {run:.4f} {a.bs * world * (step + 1) / (time.time() - t):.0f} pairs/s")
-        stop = torch.tensor([time.time() - t > a.train_min * 60], device="cuda")
+        late = a.stop_at and time.time() > __import__("calendar").timegm(time.strptime(a.stop_at, "%Y-%m-%dT%H:%M"))
+        stop = torch.tensor([time.time() - t > a.train_min * 60 or bool(late)], device="cuda")
         if ddp:
             dist.all_reduce(stop, op=dist.ReduceOp.MAX)
         if stop.item():
             log(f"time cap at step {step}"); break
         if rank == 0 and step and step % a.save_every == 0:
             model.save_pretrained(f"{a.work}/adapter")
+            with open(f"{a.work}/progress.json", "w") as fp:        # pairs seen, for a resume after a lost machine
+                fp.write('{"pairs_seen": %d}' % (a.skip_pairs + (step + 1) * a.bs * world))
     if rank == 0:
         model.save_pretrained(f"{a.work}/adapter"); tok.save_pretrained(f"{a.work}/adapter")
+        open(f"{a.work}/train_done", "w").write("1")
 model.eval()
 
 
@@ -122,16 +137,20 @@ for name in a.parts.split(","):
     if not fs:
         continue
     d = pl.read_parquet(fs[0]).with_row_index("_i")
-    part = d.filter((pl.col("_i") % world) == rank)          # each rank scores its shard
-    t = time.time()
-    part = part.with_columns(pl.Series("ce", score(part))).drop("a", "b")
-    part.write_parquet(f"{a.work}/_{name}_{rank}.parquet")
+    os.makedirs(f"{a.work}/chunks", exist_ok=True)
+    for k, c0 in enumerate(range(0, d.height, a.chunk)):
+        fn = f"{a.work}/chunks/{name}_{k:04d}.parquet"
+        if k % world != rank or os.path.exists(fn):       # chunks are shared out over the GPUs
+            continue
+        part = d.slice(c0, a.chunk); t = time.time()
+        part.with_columns(pl.Series("ce", score(part))).drop("a", "b").write_parquet(fn + ".tmp")
+        os.replace(fn + ".tmp", fn)
+        print(time.strftime("%H:%M:%S"), f"rank {rank}", name, "chunk", k, part.height, f"scored in {time.time() - t:.0f}s", flush=True)
     if ddp:
         dist.barrier()
     if rank == 0:
-        d = pl.concat([pl.read_parquet(f"{a.work}/_{name}_{r}.parquet") for r in range(world)]).sort("_i").drop("_i")
+        d = pl.concat([pl.read_parquet(f) for f in sorted(glob.glob(f"{a.work}/chunks/{name}_*.parquet"))]).sort("_i").drop("_i")
         d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")
-        log(name, d.height, f"scored in {time.time() - t:.0f}s")
         if "y" in d.columns:
             from sklearn.metrics import roc_auc_score
             log("VAL band AUC  stage-2 p:", round(roc_auc_score(d["y"], d["p"]), 4), " LLM:", round(roc_auc_score(d["y"], d["ce"]), 4))
