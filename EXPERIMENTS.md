@@ -540,3 +540,56 @@ New safe upload `dec_cebase2_frv2_frce_fr93`:
 - US/India use base2; 99.1% of their rows are unchanged.
 
 `ber-cefr-base2` adapts base2 to France (pseudo pairs + 5% fresh pairs, 40 min).
+
+### French adaptation of base2 (`ber-cefr-base2`)
+
+- Validation-band AUC falls from 0.9545 to 0.9504, the usual adaptation cost on US/India.
+- On France its bands nearly match the small French CE. At 0.93 the kept pairs differ by only ~6.5k of 800k (0.8%).
+- Expected LB effect is about ±0.0001, so France keeps the LB-tested small French CE.
+
+## Why France scores lower: compressed embedding neighbourhoods
+
+Dense top-6 neighbours per S1 (test), median gaps in dense score:
+
+| | rank 1 − rank 4 | rank 4 − rank 6 |
+|---|---|---|
+| US | 0.031 | 0.023 |
+| India | 0.033 | 0.014 |
+| **France** | 0.028 | **0.009** |
+
+Training has 0.041 / 0.020 (US) and 0.039 / 0.011 (India). French generic names ("Lille Club", "Lille Amicale") crowd together in e5 space.
+
+The strongest features are dense/route margins (rdense_score_margin_c, g_mix_margin_c), so a French true match looks less certain. Part of this is a scale shift, not real ambiguity.
+
+**Tests on the stand-in (CPU kernels):**
+- `ber-us-cnorm`: `--country_norm`, route scores as within-country quantiles before the margins are computed.
+- `ber-us-nodense`: `--drop_feats dense`, no dense-derived features.
+
+Baseline for unseen India with the model alone: 0.9332 (thr 0.9).
+
+### Stand-in: no dense features (`ber-us-nodense`)
+
+| Unseen India | Model alone | + US-only CE (w 0.7) |
+|---|---|---|
+| Base | 0.9332 | 0.9565 |
+| No dense features | 0.9350 | 0.9553 |
+
+US is unchanged. Rejected.
+
+### Stand-in: per-country quantile route scores (`ber-us-cnorm`)
+
+| Unseen India | Model alone | + US-only CE (w 0.7) |
+|---|---|---|
+| Base | 0.9332 | 0.9565 |
+| Country-normalised | 0.9351 | 0.9539 |
+
+US is unchanged. Rejected: the CE already carries the transferable signal.
+
+**AWS (26 Sep):** SageMaker and EC2 GPU quotas are 0 in all 7 regions checked. Increase requests (1 each, us-east-1) are PENDING for ml.g6e.xlarge, ml.g6e.12xlarge, ml.g5.2xlarge, ml.g5.12xlarge and ml.p4d.24xlarge training jobs. `scripts/llm_ce.py` (LoRA Qwen2.5 pair classifier) is ready for them.
+
+## 26 Sep: importance weighting, CE round 3, LLM cross-encoder on Colab A100
+- **Importance weighting (ber-us-iw)** on the unseen-India stand-in: model 0.9337 (base 0.9332), with the US-only CE 0.9525 (base 0.9565). Rejected.
+- **CE round 3 (e5-base continued on ce-data3)**: band AUC 0.9567 (round 2: 0.9544); clean val F0.5 with w=0.6: 0.98952 vs 0.98942 for round 2. Blending rounds 2 and 3 does not help (0.9893).
+- **LLM cross-encoder**: Qwen2.5-7B-Instruct + LoRA r16 (bf16, sequence-classification head) on a Colab Pro A100 40GB,
+  trained on the round-2 CE pairs (36 pairs/s, 150 min cap), scores the dec val band and the test band (dec ∪ France v2).
+  `scripts/llm_ce.py` now scores in text-length order (little padding) and saves the adapter every 1500 steps.

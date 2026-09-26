@@ -66,9 +66,14 @@ ap.add_argument("--self_train", action="store_true",
                      "(p >= --st_hi -> match, <= --st_lo -> non-match), refit stage 2 on labels + pseudo-labels")
 ap.add_argument("--pseudo_scores", default=None,
                 help="selftrain stage: parquet (s1, m, p) of the final (blended) test probabilities used as pseudo-labels")
+ap.add_argument("--iw", action="store_true",
+                help="with --train_countries: importance-weight the stage-2 training rows by how much they look like "
+                     "the held-out countries' pairs (domain classifier odds), then refit stage 2")
 ap.add_argument("--st_hi", type=float, default=0.99)
 ap.add_argument("--st_lo", type=float, default=0.05)
 ap.add_argument("--st_weight", type=float, default=1.0)
+ap.add_argument("--country_norm", action="store_true", help="route scores as within-country quantiles")
+ap.add_argument("--drop_feats", default="", help="comma-separated substrings: features containing them are not used")
 ap.add_argument("--swap_ab", action="store_true",
                 help="stage 1 on the usual stage-2 slice and stage 2 on the usual stage-1 slice (a second, diverse model); "
                      "also scores the usual model's validation S1 into val_scores_other.parquet so the two can be averaged")
@@ -98,6 +103,8 @@ if a.reuse:
 dd = find_dataset_dir(a.data)
 import ber.pipeline as _bp
 _bp.GLOBAL_SIMS = a.global_sims
+_bp.COUNTRY_NORM = a.country_norm
+_bp.DROP_FEATS = [x for x in a.drop_feats.split(",") if x]
 
 SPLITS = a.splits.split(",")
 if "norm" in stages:
@@ -414,7 +421,7 @@ if "train" in stages:
         if XV is not None:     # stage-1 slice S1 held out of stage-1 training (early stopping only)
             ctx_x = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(XV)[0]).cast(pl.Int32).implode())))
         ctx_p = None
-        if a.self_train and a.train_countries:     # unlabelled pool: other countries' S1 outside validation
+        if (a.self_train or a.iw) and a.train_countries:     # unlabelled pool: other countries' S1 outside validation
             isv = s1.select(is_val("entity_id"))["entity_id"].to_numpy()
             P = (h < (a.frac_a + a.frac_b) * 1000) & ~cmask & ~isv
             ctx_p = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(P)[0]).cast(pl.Int32).implode())))
@@ -433,6 +440,36 @@ if "train" in stages:
             m_tr = tbv["s1"].is_in(tr_s1).to_numpy()
             Xes, yes = [np.concatenate(Xva)[m_tr]], [np.concatenate(yva)[m_tr]]
         bst, it2 = fit_model(Xtr, ytr, wtr, Xes, yes, cols2, "model")
+        if ctx_p is not None and a.iw:
+            import xgboost as xgb
+            tbv.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva]))) \
+               .write_parquet(f"{a.work}/val_scores_base.parquet")
+            Xp = []
+            for t in iter_pair_tables("train", a.work, cand, s1_filter=P, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
+                t = t.join(ctx_p.filter(pl.col("qi").is_between(t["qi"].min(), t["qi"].max())), on=["qi", "ci"], how="inner")
+                Xp.append(t.select(cols2).to_numpy().astype(np.float32)); del t
+            Xp = np.concatenate(Xp); Xs = np.concatenate(Xtr)
+            rng = np.random.default_rng(7)
+            ns, nt = min(len(Xs), 2_000_000), min(len(Xp), 2_000_000)
+            Xd = np.concatenate([Xs[rng.choice(len(Xs), ns, replace=False)], Xp[rng.choice(len(Xp), nt, replace=False)]])
+            yd = np.r_[np.zeros(ns), np.ones(nt)].astype(np.float32)
+            params = {"objective": "binary:logistic", "tree_method": "hist", "max_depth": 6, "eta": 0.1,
+                      "device": "cuda" if os.path.exists("/dev/nvidia0") else "cpu"}
+            dom = xgb.train(params, xgb.DMatrix(Xd, yd), 200)
+            del Xd, yd, Xp
+            from sklearn.metrics import roc_auc_score
+            q = dom.inplace_predict(Xs[:200000]); log("domain classifier fitted; source-row mean P(target)", round(float(q.mean()), 3))
+            wr = []
+            for X, w in zip(Xtr, wtr):
+                pt = np.clip(dom.inplace_predict(X), 1e-3, 1 - 1e-3)
+                r = np.clip((pt / (1 - pt)) * (ns / nt), 0.2, 5.0).astype(np.float32)
+                wr.append(w * r)
+            m = np.mean(np.concatenate(wr)); wr = [x / m for x in wr]
+            log("importance weights: mean 1, p10/p90", np.percentile(np.concatenate(wr), [10, 90]).round(3).tolist())
+            del Xs
+            bst, it2 = fit_model(Xtr, ytr, wr, Xes, yes, cols2, "model")
+            log("stage 2 refit with importance weights, best_iter", it2)
+            ctx_p = None
         if ctx_p is not None:
             tbv.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva]))) \
                .write_parquet(f"{a.work}/val_scores_base.parquet")
@@ -476,7 +513,7 @@ if "train" in stages:
     cfg.update({"thr": best[1][0], "excl": best[1][1], "val_f05": best[0], "caps": CAPS,
                 "s2_topk": a.s2_topk, "s2_minp": a.s2_minp, "triangle": a.triangle, "decoy_feats": a.decoy_feats,
                 "dup_decoys": a.dup_decoys,
-                "global_sims": a.global_sims})
+                "global_sims": a.global_sims, "country_norm": a.country_norm})
     json.dump(cfg, open(f"{a.work}/cfg.json", "w"))
 
 if "dump" in stages:
@@ -555,6 +592,7 @@ if "test" in stages:
     cfg = json.load(open(f"{a.work}/cfg.json"))
     a.model = cfg.get("model", "lgb")
     _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims   # must match training
+    _bp.COUNTRY_NORM = cfg.get("country_norm", False) or a.country_norm
     if cfg.get("decoy_feats"):
         load_decoy_odds()
     bst = load_model("model", a.model)
