@@ -66,6 +66,9 @@ ap.add_argument("--self_train", action="store_true",
                      "(p >= --st_hi -> match, <= --st_lo -> non-match), refit stage 2 on labels + pseudo-labels")
 ap.add_argument("--pseudo_scores", default=None,
                 help="selftrain stage: parquet (s1, m, p) of the final (blended) test probabilities used as pseudo-labels")
+ap.add_argument("--iw", action="store_true",
+                help="with --train_countries: importance-weight the stage-2 training rows by how much they look like "
+                     "the held-out countries' pairs (domain classifier odds), then refit stage 2")
 ap.add_argument("--st_hi", type=float, default=0.99)
 ap.add_argument("--st_lo", type=float, default=0.05)
 ap.add_argument("--st_weight", type=float, default=1.0)
@@ -418,7 +421,7 @@ if "train" in stages:
         if XV is not None:     # stage-1 slice S1 held out of stage-1 training (early stopping only)
             ctx_x = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(XV)[0]).cast(pl.Int32).implode())))
         ctx_p = None
-        if a.self_train and a.train_countries:     # unlabelled pool: other countries' S1 outside validation
+        if (a.self_train or a.iw) and a.train_countries:     # unlabelled pool: other countries' S1 outside validation
             isv = s1.select(is_val("entity_id"))["entity_id"].to_numpy()
             P = (h < (a.frac_a + a.frac_b) * 1000) & ~cmask & ~isv
             ctx_p = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(P)[0]).cast(pl.Int32).implode())))
@@ -437,6 +440,36 @@ if "train" in stages:
             m_tr = tbv["s1"].is_in(tr_s1).to_numpy()
             Xes, yes = [np.concatenate(Xva)[m_tr]], [np.concatenate(yva)[m_tr]]
         bst, it2 = fit_model(Xtr, ytr, wtr, Xes, yes, cols2, "model")
+        if ctx_p is not None and a.iw:
+            import xgboost as xgb
+            tbv.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva]))) \
+               .write_parquet(f"{a.work}/val_scores_base.parquet")
+            Xp = []
+            for t in iter_pair_tables("train", a.work, cand, s1_filter=P, n_jobs=a.jobs, chunk_s1=a.chunk_s1):
+                t = t.join(ctx_p.filter(pl.col("qi").is_between(t["qi"].min(), t["qi"].max())), on=["qi", "ci"], how="inner")
+                Xp.append(t.select(cols2).to_numpy().astype(np.float32)); del t
+            Xp = np.concatenate(Xp); Xs = np.concatenate(Xtr)
+            rng = np.random.default_rng(7)
+            ns, nt = min(len(Xs), 2_000_000), min(len(Xp), 2_000_000)
+            Xd = np.concatenate([Xs[rng.choice(len(Xs), ns, replace=False)], Xp[rng.choice(len(Xp), nt, replace=False)]])
+            yd = np.r_[np.zeros(ns), np.ones(nt)].astype(np.float32)
+            params = {"objective": "binary:logistic", "tree_method": "hist", "max_depth": 6, "eta": 0.1,
+                      "device": "cuda" if os.path.exists("/dev/nvidia0") else "cpu"}
+            dom = xgb.train(params, xgb.DMatrix(Xd, yd), 200)
+            del Xd, yd, Xp
+            from sklearn.metrics import roc_auc_score
+            q = dom.inplace_predict(Xs[:200000]); log("domain classifier fitted; source-row mean P(target)", round(float(q.mean()), 3))
+            wr = []
+            for X, w in zip(Xtr, wtr):
+                pt = np.clip(dom.inplace_predict(X), 1e-3, 1 - 1e-3)
+                r = np.clip((pt / (1 - pt)) * (ns / nt), 0.2, 5.0).astype(np.float32)
+                wr.append(w * r)
+            m = np.mean(np.concatenate(wr)); wr = [x / m for x in wr]
+            log("importance weights: mean 1, p10/p90", np.percentile(np.concatenate(wr), [10, 90]).round(3).tolist())
+            del Xs
+            bst, it2 = fit_model(Xtr, ytr, wr, Xes, yes, cols2, "model")
+            log("stage 2 refit with importance weights, best_iter", it2)
+            ctx_p = None
         if ctx_p is not None:
             tbv.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva]))) \
                .write_parquet(f"{a.work}/val_scores_base.parquet")
