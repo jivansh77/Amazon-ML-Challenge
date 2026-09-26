@@ -1,4 +1,4 @@
-"""Cross-encoder (intfloat/multilingual-e5-small, MIT) fine-tuned on hard (S1, S2/S3) candidate pairs.
+"""Cross-encoder (intfloat/multilingual-e5-small or -base, MIT) fine-tuned on hard (S1, S2/S3) candidate pairs.
 
 Reads train/val_band/test_band parquet files (columns a, b [, y, p]) from --ce_data, trains for at most
 --train_min minutes, saves the model to <work>/ce_model and writes <work>/ce_val.parquet and ce_test.parquet
@@ -12,21 +12,38 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--data"); ap.add_argument("--work", required=True)
 ap.add_argument("--ce_data", default="/kaggle/input/**/ber-ce-data*")
 ap.add_argument("--model_dir", default=None, help="score only, with an already fine-tuned model")
+ap.add_argument("--init_dir", default=None, help="continue fine-tuning from this model (glob ok)")
+ap.add_argument("--train_mix", default="train.parquet:1",
+                help="training files in --ce_data with the fraction of rows to use, e.g. pseudo.parquet:1,train.parquet:0.1")
+ap.add_argument("--lr", type=float, default=5e-5)
+ap.add_argument("--base_model", default="intfloat/multilingual-e5-small", help="pretrained encoder to fine-tune (MIT)")
 ap.add_argument("--train_min", type=float, default=55)
 ap.add_argument("--bs", type=int, default=128); ap.add_argument("--maxlen", type=int, default=128)
 a = ap.parse_args()
 os.makedirs(a.work, exist_ok=True)
 root = [d for d in glob.glob(a.ce_data, recursive=True) if os.path.isdir(d)]
-f = lambda name: glob.glob(os.path.join(root[0], "**", name), recursive=True)[0]
+f = lambda name: (glob.glob(os.path.join(root[0], "**", name), recursive=True) or [None])[0]
 print("ce data:", root[0], flush=True)
-MODEL = a.model_dir or "intfloat/multilingual-e5-small"
+for k in ("model_dir", "init_dir"):                   # allow a glob (mounted kernel output)
+    v = getattr(a, k)
+    if v and not os.path.isdir(v):
+        setattr(a, k, [d for d in glob.glob(v, recursive=True) if os.path.isdir(d)][0])
+MODEL = a.model_dir or a.init_dir or a.base_model
+print("model:", MODEL, flush=True)
 tok = AutoTokenizer.from_pretrained(MODEL)
 model = AutoModelForSequenceClassification.from_pretrained(MODEL, num_labels=1).cuda()
 if not a.model_dir:
-    tr = pl.read_parquet(f("train.parquet"))
+    parts = []
+    for item in a.train_mix.split(","):
+        name, frac = item.split(":")
+        path = glob.glob(name, recursive=True)[0] if "/" in name else f(name)     # a path/glob, or a file in --ce_data
+        d = pl.read_parquet(path, columns=["a", "b", "y"])
+        parts.append(d.sample(fraction=float(frac), seed=0) if float(frac) < 1 else d)
+        print("train file", name, parts[-1].height, "pairs, positive rate", round(parts[-1]["y"].mean(), 3), flush=True)
+    tr = pl.concat(parts).sample(fraction=1.0, shuffle=True, seed=2)
     A, B, Y = tr["a"].to_list(), tr["b"].to_list(), tr["y"].to_numpy().astype(np.float32)
     n_steps = len(A) // a.bs
-    opt = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+    opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
     sch = get_linear_schedule_with_warmup(opt, 500, n_steps)
     scaler = torch.cuda.amp.GradScaler(); lossf = torch.nn.BCEWithLogitsLoss()
     model.train(); t = time.time(); run = 0.0
@@ -59,6 +76,8 @@ def score(df, bs=512):
 
 for name in ["val_band", "test_band"]:
     t = time.time()
+    if f(f"{name}.parquet") is None:
+        continue
     d = pl.read_parquet(f(f"{name}.parquet"))
     d = d.with_columns(pl.Series("ce", score(d))).drop("a", "b")
     d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")

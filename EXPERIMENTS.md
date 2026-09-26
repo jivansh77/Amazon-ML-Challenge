@@ -166,3 +166,298 @@ Decoys are "branches" of the S1 business: the same name plus an ADDED qualifier 
 **Runs:**
 - `ber-dec-train`: best recipe + decoy features + stage-1 filter (top 15, p ≥ 0.005).
 - `ber-decdup-train`: the same + decoy duplication (test-like density in both training and validation).
+
+## Cross-encoder (`ber-ce`, Kaggle T4)
+
+**Setup:**
+- Model: `intfloat/multilingual-e5-small` (MIT) fine-tuned as a cross-encoder on "name | address" pairs.
+- Training data: 2.23M hard pairs from training S1s outside the big model's validation set, 24% positives. Negatives are the candidates within rank 5, plus 35% of the rest.
+- Training: 55-minute time cap (1.49M pairs seen), max length 128, lr 5e-5, fp16.
+- The saved model (`ce_model`) scores any model's uncertain band (0.02 ≤ p < 0.998).
+
+**On the big model's validation band (75k pairs):**
+
+| Scorer | AUC |
+|---|---|
+| Stage-2 model | 0.9657 |
+| Cross-encoder | 0.9559 |
+| **Mean of the two** | **0.9768** |
+
+The two are complementary.
+
+**Blend on big's validation (logit average, w = weight of the stage-2 model):**
+
+| w | Val F0.5 |
+|---|---|
+| 1.0 (big alone) | 0.9840 |
+| 0.8 | 0.9866 |
+| **0.6** | **0.9874** |
+| 0.5 | 0.9871 |
+
+Linear averaging is a little weaker (best 0.9862).
+
+**big + CE test file** (`matching_results_big_ce_percountry.tsv`): per-country thresholds US 0.70 / India 0.80 / France 0.97, 3.33 matches per S1.
+
+## dec + cross-encoder (`ber-cescore-dec`)
+
+The saved cross-encoder scored the dec model's uncertain band:
+
+| Band | Pairs |
+|---|---|
+| Validation | 74,473 |
+| Test | 1,385,388 |
+
+**AUC on the dec validation band:**
+
+| Scorer | AUC |
+|---|---|
+| Stage-2 model | 0.9651 |
+| Cross-encoder | 0.9383 |
+| **Mean of the two** | **0.9708** |
+
+**Blend on dec's validation.** The 1,335 validation S1s (1.39%) that the cross-encoder saw in training are excluded, so the numbers are clean.
+
+| Blend | Best threshold F0.5 | F0.5 decoder |
+|---|---|---|
+| dec alone | 0.98651 | 0.98655 |
+| linear, w = 0.6 | 0.98757 | 0.98718 |
+| logit, w = 0.8 | 0.98839 | 0.98821 |
+| **logit, w = 0.6** | **0.98862** (thr 0.8) | 0.98837 |
+| logit, w = 0.5 | 0.98824 | 0.98753 |
+
+**Test file** `matching_results_dec_ce_percountry.tsv`:
+- Per-country thresholds: US 0.80 / India 0.80 / France 0.97.
+- 5.75M pairs (3.32 per S1). Passes the official validator against `candidate_pairs_dec.tsv`.
+- Agreement with other files (share of identical rows): 90.4% with big_percountry (LB 0.9757), 95.2% with dec_percountry.
+
+## France is where the leaderboard gap is (26 Sep analysis)
+
+Per-S1 profile of the dec model's stage-2 pairs:
+
+| | Confident (p ≥ 0.998) | Band (0.02–0.998) | Mid (0.3–0.9) |
+|---|---|---|---|
+| Val US / India | 3.20 / 3.03 | 0.79 / 0.75 | 0.107 / 0.110 |
+| Test US / India | 3.24 / 3.06 | 0.81 / 0.77 | 0.122 / 0.128 |
+| **Test France** | **2.91** | **1.04** | **0.251** |
+
+- US and India test look like validation, with only ~15% more mid-band pairs, spread evenly over S2 and S3.
+- France has 2.3× the mid band.
+- On the LB, moving France from thr 0.90 to 0.97 (and India 0.90 → 0.85) gained +0.0027. That means France's [0.90, 0.97) pairs were mostly wrong.
+
+**Why France:** the decoy-word odds are learned on US/India labels. French qualifiers score 0 ("unknown word"), so French lookalike branches stay uncertain.
+
+| Pairs where the candidate ADDS the word | Pairs | Confident + | Confident − | Uncertain |
+|---|---|---|---|---|
+| "france" | 36.5k | 2.6k | 24.7k | 9.1k |
+| "sainte" | 990 | 0 | 630 | 360 |
+| "lille" | 254 | 0 | 239 | 15 |
+
+Other French decoy patterns: a category word swapped at the same address (Comite → Musique, Club → Amicale, Ecole → Lycee), a city name added, and "EI" added.
+
+**Transductive fix (`fit_pseudo_odds.py`, `--odds_extra`):**
+- Confident test predictions (blend ≥ 0.99 / ≤ 0.05) serve as labels, and word log-odds are fitted on near-duplicate names.
+- Sanity check on US test against the training odds for the same words: extra-word correlation 0.69, sign agreement 81% for strong words. Pseudo < −3 implies train < −2 in 97% of words.
+- Magnitudes are ~2× too large (regression slope 0.47), so the French scores are halved.
+- Missing-word odds are unreliable (sign agreement 46%) and are not used.
+- 101 new French extra-words. The most decoy-like: sainte, lille, ateliers, nantes, jean, ei, bordeaux, notre, departemental, pierre, energie, communale, marie, calais, residence, ehpad, musique, maison, sport, france (−2.1 after halving).
+- Match-like words are generator typos: farmacie, clbu, teatre, uion.
+
+`ber-dec-test2` re-scores test with these words.
+
+**Cross-encoder self-training for France (`ber-ce-fr-train`):**
+- Continues the CE from `ber-ce` with lr 2e-5 on 300k confident French test pairs (50/50) plus 290k US/India training pairs.
+- It then scores France's band [0.003, 0.9995).
+
+**Who is right when the stage-2 model and the CE disagree** (clean US/India validation band):
+
+| Case | Pairs | Share that are true matches |
+|---|---|---|
+| p < 0.6 and CE > 0.99 | 944 | 84% |
+| p < 0.3 and CE > 0.99 | 440 | 74% |
+| p > 0.9 and CE < 0.3 | 1362 | 80% |
+| Blend in [0.85, 0.97) | 5776 | 94.6% |
+
+### Results of the France runs (26 Sep, early)
+
+**`ber-dec-test2`** (test re-scored with the 101 French extra-words):
+
+| Effect | Pairs |
+|---|---|
+| France pairs changed by > 0.01 | 86k |
+| France pairs changed by > 0.2 | 17.6k |
+| "+ France" pairs dropped by the stage-1 filter | 23k of 36.5k |
+
+- Pure additions collapse, e.g. "club projets" → "club projets france": 0.986 → 0.016.
+- The model is non-monotonic in the new score: substitutions ("ase culturelle" → "ase france") rose from 0.04 to 0.93.
+- Band totals barely move.
+- The new words also touch ~95k US/India pairs (club, sport, bar, residence… occur there). The probe files therefore keep the old US/India scores.
+
+**`ber-ce-fr-train`** (cross-encoder continued on 300k confident French test pairs + 290k US/India training pairs, lr 2e-5, 4.6k steps):
+- Validation-band AUC 0.9377, against 0.9383 before: no US/India damage.
+- On France's band the mean CE drops from 0.53 to 0.32. 29% of pairs the old CE scored ≥ 0.99 fall below 0.5.
+- What gets rejected: category-word swaps at the same address (Loisirs → Fetes, Club → Groupement), "Cie" → "Et Fils", same name at a different street with the same number, "+ France".
+- Clear errors: abbreviation expansions such as "DV Ets" → "DV Établissements" (0.10).
+- The pseudo-labels carry the stage-2 model's view (the confident-negative set includes pairs where it overrode the CE), so the adapted CE mostly learns that view for France.
+
+**France pair budget** (pairs per S1 per band, after exclusivity):
+- US/India test pairs per band ≈ validation true matches per band. Their thresholds are consistent.
+- France has 3.05–3.09 pairs per S1 in the top band vs 3.33, and about 2× the pairs in every band from 0.7 to 0.98.
+
+**Earlier LB pair:** big thr 0.90 → per-country (FR 0.97, IN 0.85) gained +0.0027. India's part is worth ~+0.0001, so the removed France [0.90, 0.97) pairs were only ~20% true matches. France probably has fewer matches per S1, and its lower bands are mostly decoys, so France thresholds stay high.
+
+**Probe files** (US/India identical to `dec_ce_percountry`; only France differs):
+
+| File | France rows changed vs dec_ce |
+|---|---|
+| `matching_results_dec_ce_frwords.tsv` (French words, France thr 0.97) | 1.9% |
+| `matching_results_dec_ce_frwords_frce.tsv` (+ French CE, France thr 0.97) | 5.4% |
+
+## decdup is broken on test (26 Sep): do not upload any decdup file
+
+The duplication added virtual copies only to records that match no S1 (label-derived). In training and validation, every nearby decoy therefore had an exact twin. The model learned the shortcut "no twin → real match".
+
+On validation the shortcut still works, because validation also has the twins:
+- On the 48k validation S1 with no virtual copies, decdup beats dec (0.9888 vs 0.9876; +CE 0.9895 vs 0.9893).
+- A dec + decdup average reaches 0.9900.
+
+Those S1s are the easy ones, with no decoy nearby. Test has no twins, so decdup accepts decoys:
+
+| | dec | decdup |
+|---|---|---|
+| Test S1 with best p ≥ 0.8 | 94.1% | **99.1%** |
+| Test S1 predicted empty | 5.9% | **0.9%** |
+| Training S1 with no match | 5.6% | 5.6% |
+
+- On 35,344 test S1s, dec's best candidate is below 0.3 while decdup's is at least 0.9 (15.6k US, 13.9k India, 5.9k France). The reverse happens 13 times.
+- Those S1s are almost certainly singletons, which score 0 when anything is predicted: about −0.02 on the leaderboard.
+- The earlier symptoms were the prior-shift thresholds at 0.99 in every country and 3.53 matches per S1 at thr 0.80.
+
+**Lesson:** a density simulation must not be label-conditional. Dropping S1s (dropA) was the leak-free variant, and it did not help.
+
+## France threshold: two estimates disagree, so the LB decides
+
+**Label-shift EM (Saerens):**
+- Isotonic calibration of the blended score on validation (after exclusivity; positive share 0.856).
+- Then per test country, EM on the pair prior, and the threshold where the corrected probability reaches 0.78.
+
+| Variant | US | India | France |
+|---|---|---|---|
+| dec_ce | prior 0.90, thr 0.78 | prior 0.92, thr 0.74 | prior 0.82, **thr 0.84** |
+| + French words | 0.78 | 0.74 | 0.80 |
+| + French words + French CE | 0.78 | 0.74 | 0.86 |
+
+**Per-band count estimate (`prior_thresholds`):** France 0.97–0.98.
+
+The EM assumes France's score distribution given the label equals validation's. The band count assumes France has as many true matches per S1 per band as US/India. Neither holds for sure.
+
+**Probes on dec_ce, France threshold only (US/India unchanged):**
+
+| File | France threshold |
+|---|---|
+| `dec_ce_fr99` | 0.99 |
+| `dec_ce_percountry` | 0.97 |
+| `dec_ce_fr93` | 0.93 |
+| `dec_ce_fr85` | 0.85 |
+
+Each LB difference is the net value of one France band.
+
+**Upload plan, 26 Sep 4pm:**
+1. dec_ce_percountry
+2. dec_ce_frwords_frce
+3. dec_ce_fr99
+4. dec_ce_fr93
+5. dec_ce_fr85
+
+dec_ce_frwords (words only) is kept for 27 Sep if needed.
+
+## French words, v2: calibrated, not halved (26 Sep)
+
+On validation the model's response to the learned score of an added word is calibrated and sharply non-linear. For pairs whose candidate adds exactly one word:
+
+| Word score | Pairs | True matches |
+|---|---|---|
+| Unknown word (mostly generator typos) | 67k | 88% |
+| (−1, 0] | 29.5k | 76% |
+| (−2, −1] | 5.2k | 66% |
+| (−3, −2] | 577 | 55% |
+| **(−4, −3]** | 6.3k | **3%** |
+| ≤ −4 | 0.7k | 4–11% |
+
+v1 halved the pseudo scores, which put "france" at −2.1, in the ambiguous zone. In confident French pairs "+ france" is ~10% match.
+
+**v2 (`--calib isotonic`):**
+- Run the same pseudo-label recipe on the labelled countries' test pairs (US + India, 5.55M confident pairs).
+- Compare with their training odds word by word (437 words) and fit a monotone map.
+
+| Pseudo score | −8 | −6 | −4 | −3 | −2 | −1 | 0 | +1 |
+|---|---|---|---|---|---|---|---|---|
+| Training scale | −5.16 | −5.07 | −3.45 | −2.56 | −2.35 | −1.30 | −0.79 | +1.07 |
+
+After calibration:
+- "france", "club", "amicale", "musique" → −3.45.
+- "sainte", "lille", "nantes", "ateliers", "ei", "bordeaux" → −5.07.
+- Typos such as "farmacie" → +1.11.
+
+`ber-dec-test3` re-scores test with v2 (CPU kernel).
+
+**`ber-dec-test3`** (French words v2, calibrated):
+
+| File | Words | CE for France | France rows changed vs dec_ce | France S1 predicted empty |
+|---|---|---|---|---|
+| dec_ce (baseline) | – | original | – | 6.57% |
+| `dec_ce_frv2` | v2 | original | 2.95% | 6.65% |
+| `dec_ce_frv2_frce` | v2 | French | 6.40% | 6.79% |
+
+- US/India are identical in all three.
+- Candidate file: `candidate_pairs_dec_frv2.tsv` (4.13 per S1).
+- Both files replace the v1 France files in the upload plan.
+
+## Swapped-slice twin (`ber-decswap-train`, `--swap_ab`): no gain
+
+- Stage 1 trained on dec's stage-2 slice and stage 2 on dec's stage-1 slice.
+- The first run ran out of memory while scoring all training pairs with stage 1; `--chunk_s1 90000` fixed it.
+- Its own validation: 0.9859. Averaged with dec on dec's 94k clean validation S1:
+
+| | No CE | + CE (w 0.7) |
+|---|---|---|
+| dec alone | 0.98651 | 0.98873 |
+| Logit average (0.3–0.7) | 0.98663 | 0.98880 |
+
+The gain is ~+0.0001, within noise. The stage-2 model is saturated for this feature set, so the twin is not taken to test.
+
+## Bigger cross-encoder: multilingual-e5-base (`ber-ce-base`)
+
+- Training: 150-minute cap on a T4 at 193 pairs/s (1.74M pairs seen), lr 3e-5, same pairs as the small CE.
+- Scoring: validation band in 2 min, test band (1.39M) in 39 min.
+
+| AUC on dec's validation band | Stage-2 model | CE | Mean of the two |
+|---|---|---|---|
+| Small CE (e5-small) | 0.9651 | 0.9383 | 0.9708 |
+| **Base CE (e5-base)** | 0.9651 | **0.9453** | **0.9730** |
+
+**Blend F0.5 on clean dec validation** (CE-training S1 excluded):
+
+| Blend | Val F0.5 |
+|---|---|
+| Model alone | 0.98651 |
+| + small CE (w 0.6 / 0.7) | 0.98862 / 0.98873 |
+| **+ base CE (w 0.6, thr 0.8)** | **0.98905** |
+| Small + base three-way | ≤ 0.98902 |
+
+The optimum is flat for w in 0.6–0.65 and thresholds 0.75–0.8.
+
+**New probe set (all with the base CE; US/India identical across the five):**
+- `dec_cebase`, `dec_cebase_fr99`, `dec_cebase_fr93`, `dec_cebase_fr85`: the base CE for France too.
+- `dec_cebase_frv2_frce`: France uses v2 words + the French-adapted small CE.
+
+`dec_cebase` vs `dec_ce_percountry`: 98.3% of rows are identical.
+
+## LB 26 Sep
+
+| Upload | Public LB |
+|---|---|
+| `dec_cebase` (dec + e5-base CE, US/IN 0.80, FR 0.97) | **0.982855** |
+| Previous best (big_percountry) | 0.975703 |
+
+The gain is +0.0072. If US/India score their validation 0.989 on test, France is at about 0.92, so it is still the weak spot.
+| `dec_cebase_frv2_frce` (France: v2 words + French CE, FR 0.97) | **0.983051** (+0.0002 vs baseline, France only) |

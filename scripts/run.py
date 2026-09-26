@@ -58,8 +58,17 @@ ap.add_argument("--decoy_feats", action="store_true", help="decoy-signature feat
 ap.add_argument("--dup_decoys", action="store_true", help="duplicate near decoy candidates in training (test-like decoy density)")
 ap.add_argument("--dup_near", type=int, default=10, help="only duplicate decoys within this route rank of the S1")
 ap.add_argument("--triangle", action="store_true", help="stage-2 consistency features vs the S1's anchor match")
+ap.add_argument("--train_countries", default=None,
+                help="train both stages and the decoy odds only on these countries (comma-separated); validation keeps "
+                     "every country, so the others act as labelled 'unseen countries' (a stand-in for France)")
+ap.add_argument("--swap_ab", action="store_true",
+                help="stage 1 on the usual stage-2 slice and stage 2 on the usual stage-1 slice (a second, diverse model); "
+                     "also scores the usual model's validation S1 into val_scores_other.parquet so the two can be averaged")
 ap.add_argument("--global_sims", action="store_true", help="name/address sims + competition over all pairs")
 ap.add_argument("--model", default="lgb", choices=["lgb", "xgb"], help="xgb = XGBoost on GPU (batched)")
+ap.add_argument("--odds_extra", default=None,
+                help="parquet(s) (token, score), comma-separated: extra-word scores for words the training odds "
+                     "do not know (e.g. French words learned from confident test predictions, fit_pseudo_odds.py)")
 a = ap.parse_args()
 os.makedirs(a.work, exist_ok=True)
 out = a.out or os.path.join(a.work, "output")
@@ -73,6 +82,8 @@ if a.reuse:
             for f in (glob.glob(os.path.join(d, "*.parquet")) + glob.glob(os.path.join(d, "model*.txt")) +
                       glob.glob(os.path.join(d, "model*.json")) + glob.glob(os.path.join(d, "cfg.json"))):
                 dst = os.path.join(a.work, os.path.basename(f))
+                if os.path.basename(f) == "test_scores.parquet":     # an output of this run, never an input
+                    continue
                 if not os.path.exists(dst):
                     os.symlink(f, dst)
                     log("reusing", f)
@@ -258,6 +269,12 @@ def fit_decoy_odds(C, edges):
 def load_decoy_odds():
     import ber.features as bf
     bf.TOK_ODDS = {k: pl.read_parquet(f"{a.work}/tokodds_{k}.parquet") for k in ("extra", "missing")}
+    for path in (a.odds_extra.split(",") if a.odds_extra else []):
+        t = bf.TOK_ODDS["extra"]
+        add = pl.read_parquet(path).select("token", pl.col("score").cast(pl.Float32))
+        add = add.filter(~pl.col("token").is_in(t["token"].implode()))       # the training odds take precedence
+        bf.TOK_ODDS["extra"] = pl.concat([t.select("token", pl.col("score").cast(pl.Float32)), add])
+        log("extra word odds from", path, "+", add.height, "words:", add.sort("score").head(12)["token"].to_list())
 
 
 def s2_filter(ctx):
@@ -313,7 +330,10 @@ def fit_model(Xtr, ytr, wtr, Xva, yva, cols, tag):
 def load_model(tag, kind):
     if kind == "xgb":
         import xgboost as xgb
-        b = xgb.Booster(); b.load_model(f"{a.work}/{tag}.json"); return b
+        b = xgb.Booster(); b.load_model(f"{a.work}/{tag}.json")
+        if not os.path.exists("/dev/nvidia0"):     # trained on GPU; predict on CPU when there is none
+            b.set_param({"device": "cpu"})
+        return b
     return lgb.Booster(model_file=f"{a.work}/{tag}.txt")
 
 
@@ -335,8 +355,12 @@ if "train" in stages:
     if a.drop_s1 > 0:
         log("dropping", int(drop.sum()), "S1 to simulate test density")
     ids_all = s1.rename({"entity_id": "s1"}).filter(pl.Series(~drop))
+    cmask = np.ones(len(h), bool)
+    if a.train_countries:
+        cmask = s1["country"].is_in(a.train_countries.split(",")).to_numpy()
+        log("training countries:", a.train_countries, "S1:", int(cmask.sum()))
     if a.decoy_feats:
-        fit_decoy_odds((h >= 900) & ~drop, edges)        # held-out 10% slice, never used by A / B / use
+        fit_decoy_odds((h >= 900) & ~drop & cmask, edges)        # held-out 10% slice, never used by A / B / use
     dupm = None
     if a.dup_decoys:
         s23i = pl.read_parquet(f"{a.work}/train_s23n.parquet", columns=["entity_id"])["entity_id"]
@@ -360,6 +384,14 @@ if "train" in stages:
     else:
         A = h < a.frac_a * 1000
         B = (h >= a.frac_a * 1000) & (h < (a.frac_a + a.frac_b) * 1000)
+        if a.train_countries:     # training rows only from the training countries; validation S1 of every country
+            isv = s1.select(is_val("entity_id"))["entity_id"].to_numpy()
+            A = A & cmask
+            B = B & (cmask | isv)
+        XV = None
+        if a.swap_ab:
+            XV = B & s1.select(is_val("entity_id"))["entity_id"].to_numpy()     # the usual model's validation S1
+            A, B = B, A
         cand = load_candidates("train", a.work, CAPS, drop_qi=drop if a.drop_s1 > 0 else None, dup_mask=dupm, dup_near=a.dup_near)
         # stage 1 on A
         Xtr, ytr, wtr, Xva, yva, _, cols = collect("train", cand, A, lab)
@@ -367,6 +399,9 @@ if "train" in stages:
         Xtr = ytr = wtr = Xva = yva = None; import gc; gc.collect()
         # stage-1 scores for EVERY train pair (A rows are in-sample; they only act as competitors)
         ctx = score_context(score_all("train", cand, b1, cols, it1))
+        ctx_x = None
+        if XV is not None:     # stage-1 slice S1 held out of stage-1 training (early stopping only)
+            ctx_x = s2_filter(ctx.filter(pl.col("qi").is_in(pl.Series(np.where(XV)[0]).cast(pl.Int32).implode())))
         ctx = ctx.filter(pl.col("qi").is_in(pl.Series(np.where(B)[0]).cast(pl.Int32).implode()))
         if a.triangle:
             ctx = add_triangle("train", a.work, ctx, jobs=a.jobs)
@@ -374,8 +409,15 @@ if "train" in stages:
         gc.collect()
         # stage 2 on B
         Xtr, ytr, wtr, Xva, yva, tbv, cols2 = collect("train", cand, B, lab, ctx=ctx, seed=1)
-        del cand, ctx
+        del ctx
         bst, it2 = fit_model(Xtr, ytr, wtr, Xva, yva, cols2, "model")
+        if ctx_x is not None:
+            _, _, _, Xx, _, tbx, _ = collect("train", cand, XV, lab, ctx=ctx_x, cols=cols2, seed=2)
+            tbx.select("s1", "m", "y").with_columns(pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xx]))) \
+               .write_parquet(f"{a.work}/val_scores_other.parquet")
+            log("scored the usual model's validation S1 ->", "val_scores_other.parquet", tbx.height, "pairs")
+            del ctx_x, Xx, tbx
+        del cand
         va = tbv.select("s1", "m", "y").with_columns(
             pl.Series("p", np.concatenate([predict(bst, x, it2) for x in Xva])))
         va1 = tbv.select("s1", "m", "y", pl.col("p1").alias("p"))
@@ -422,11 +464,7 @@ if "test" in stages:
     _bp.GLOBAL_SIMS = cfg.get("global_sims", a.global_sims) or a.global_sims   # must match training
     if cfg.get("decoy_feats"):
         load_decoy_odds()
-    if a.model == "xgb":
-        import xgboost as xgb
-        bst = xgb.Booster(); bst.load_model(f"{a.work}/model.json")
-    else:
-        bst = lgb.Booster(model_file=f"{a.work}/model.txt")
+    bst = load_model("model", a.model)
     cand = load_candidates("test", a.work, cfg.get("caps", CAPS))
     parts = []
     import gc
@@ -457,10 +495,13 @@ if "test" in stages:
     s1_all = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id"])["entity_id"]
     s23_all = pl.read_parquet(f"{a.work}/test_s23n.parquet", columns=["entity_id"])["entity_id"]
     tab = tab.with_columns(s1_all.gather(tab["qi"]).alias("s1"), s23_all.gather(tab["ci"]).alias("m")).drop("qi", "ci")
+    if os.path.islink(f"{a.work}/test_scores.parquet"):     # never write through a reused link
+        os.unlink(f"{a.work}/test_scores.parquet")
     tab.write_parquet(f"{a.work}/test_scores.parquet")
     if a.prior_thr and os.path.exists(f"{a.work}/val_scores.parquet"):
         from ber.pipeline import prior_thresholds, decode_by_country
-        trc = pl.read_parquet(f"{a.work}/train_s1n.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
+        from ber.io import read_source      # raw source: test-only runs don't mount the train caches
+        trc = read_source(os.path.join(dd, "train", "train_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
         tec = pl.read_parquet(f"{a.work}/test_s1n.parquet", columns=["entity_id", "country"]).rename({"entity_id": "s1"})
         thr_c, est = prior_thresholds(pl.read_parquet(f"{a.work}/val_scores.parquet"), tab, trc, tec)
         log("prior-corrected per-country thresholds:", thr_c)
