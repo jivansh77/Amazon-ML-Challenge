@@ -460,3 +460,4 @@ The optimum is flat for w in 0.6–0.65 and thresholds 0.75–0.8.
 | Previous best (big_percountry) | 0.975703 |
 
 The gain is +0.0072. If US/India score their validation 0.989 on test, France is at about 0.92, so it is still the weak spot.
+| `dec_cebase_frv2_frce` (France: v2 words + French CE, FR 0.97) | **0.983051** (+0.0002 vs baseline, France only) |
