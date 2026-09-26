@@ -540,3 +540,9 @@ New safe upload `dec_cebase2_frv2_frce_fr93`:
 - US/India use base2; 99.1% of their rows are unchanged.
 
 `ber-cefr-base2` adapts base2 to France (pseudo pairs + 5% fresh pairs, 40 min).
+
+### French adaptation of base2 (`ber-cefr-base2`)
+
+- Validation-band AUC falls from 0.9545 to 0.9504, the usual adaptation cost on US/India.
+- On France its bands nearly match the small French CE. At 0.93 the kept pairs differ by only ~6.5k of 800k (0.8%).
+- Expected LB effect is about ±0.0001, so France keeps the LB-tested small French CE.
