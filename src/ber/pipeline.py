@@ -152,8 +152,11 @@ def load_candidates(split, work, caps, keep_qi=None, drop_qi=None, dup_mask=None
         cand = cand.with_columns(ctry.gather(cand["qi"]).alias("_c"))
         cand = cand.with_columns([(pl.col(sc).rank("average").over("_c") / pl.len().over("_c")).cast(pl.Float32).alias(sc)
                                   for _, sc, _ in routes]).drop("_c")
-    cand = context_features(cand, [sc for _, sc, _ in routes])
-    for _, sc, _ in routes:
+    # the reverse-name route keeps only its score and rank: its context columns would cost ~2.6 GB of RAM on
+    # 82M training pairs (the run is already near the Kaggle limit) for pairs that are mostly not on that route
+    ctx_routes = [(r, sc, rk) for r, sc, rk in routes if r != "rname"]
+    cand = context_features(cand, [sc for _, sc, _ in ctx_routes])
+    for _, sc, _ in ctx_routes:
         cand = add_second_best(cand, sc, "ci", f"{sc}_margin_c")
         cand = add_second_best(cand, sc, "qi", f"{sc}_margin_q")
     log(split, "candidates", n0, "-> pruned", cand.height)
