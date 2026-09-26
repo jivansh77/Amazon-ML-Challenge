@@ -25,6 +25,8 @@ ap.add_argument("--score_only", default=None, help="dir with a saved adapter: sk
 ap.add_argument("--save_every", type=int, default=1500, help="save the adapter every N steps (sessions can die)")
 ap.add_argument("--score_bs", type=int, default=128)
 ap.add_argument("--parts", default="val_band,test_band")
+ap.add_argument("--chunk", type=int, default=100_000, help="score in chunks of this many pairs; finished chunks are kept "
+                                                         "and skipped on a rerun (Colab VMs can disappear)")
 a = ap.parse_args()
 
 ddp = "LOCAL_RANK" in os.environ
@@ -122,18 +124,19 @@ for name in a.parts.split(","):
     if not fs:
         continue
     d = pl.read_parquet(fs[0]).with_row_index("_i")
-    part = d.filter((pl.col("_i") % world) == rank)          # each rank scores its shard
-    t = time.time()
-    part = part.with_columns(pl.Series("ce", score(part))).drop("a", "b")
-    part.write_parquet(f"{a.work}/_{name}_{rank}.parquet")
-    if ddp:
-        dist.barrier()
-    if rank == 0:
-        d = pl.concat([pl.read_parquet(f"{a.work}/_{name}_{r}.parquet") for r in range(world)]).sort("_i").drop("_i")
-        d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")
-        log(name, d.height, f"scored in {time.time() - t:.0f}s")
-        if "y" in d.columns:
-            from sklearn.metrics import roc_auc_score
-            log("VAL band AUC  stage-2 p:", round(roc_auc_score(d["y"], d["p"]), 4), " LLM:", round(roc_auc_score(d["y"], d["ce"]), 4))
+    os.makedirs(f"{a.work}/chunks", exist_ok=True)
+    for c0 in range(0, d.height, a.chunk):
+        fn = f"{a.work}/chunks/{name}_{c0 // a.chunk:04d}.parquet"
+        if os.path.exists(fn):
+            continue
+        part = d.slice(c0, a.chunk); t = time.time()
+        part.with_columns(pl.Series("ce", score(part))).drop("a", "b").write_parquet(fn + ".tmp")
+        os.replace(fn + ".tmp", fn)
+        log(name, "chunk", c0 // a.chunk, part.height, f"scored in {time.time() - t:.0f}s")
+    d = pl.concat([pl.read_parquet(f) for f in sorted(glob.glob(f"{a.work}/chunks/{name}_*.parquet"))]).sort("_i").drop("_i")
+    d.write_parquet(f"{a.work}/ce_{name.split('_')[0]}.parquet")
+    if "y" in d.columns:
+        from sklearn.metrics import roc_auc_score
+        log("VAL band AUC  stage-2 p:", round(roc_auc_score(d["y"], d["p"]), 4), " LLM:", round(roc_auc_score(d["y"], d["ce"]), 4))
 if ddp:
     dist.destroy_process_group()
