@@ -16,3 +16,7 @@ Build: the `artifacts/v13` command plus `--first_min US=0.5,India=0.5`:
 
 Output: 5,837,764 matches (v13 + 904: US 456, India 448), validator PASS, no record on more than one S1, same candidate
 pairs as v13. `first_match_adds.parquet` holds the 904 pairs.
+
+`avg_ce4_v14b` (recommended over v14) = the same command with `--first_skip_ea_ties` added: first match skips
+empty-address records whose core name is shared by 2+ S1 of the country (187 of the 904 picks). Output: 5,837,577 matches
+(v13 + 717), validator PASS; `first_match_adds_v14b.parquet` holds the 717 pairs.

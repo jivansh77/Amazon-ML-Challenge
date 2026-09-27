@@ -28,6 +28,7 @@ ap.add_argument("--w", type=float, default=0.6)
 ap.add_argument("--thr", default="US=0.8,India=0.8,France=0.87")
 ap.add_argument("--rules", default="A2,HN_A,D", help="France rules to apply (empty = none): A2, A2F, HN_A, D, DP, E, E2, OOC, HNK")
 ap.add_argument("--e_margin", type=float, default=15.0)
+ap.add_argument("--first_skip_ea_ties", action="store_true", help="first match: skip empty-address records whose core name is shared by 2+ S1")
 ap.add_argument("--first_min", default="", help="S1 with no match after decoding, rules and routes: add its best unclaimed candidate when p >= this "
                 "(per country, e.g. US=0.6,India=0.6,France=0.6); for an empty S1 the F0.5 break-even precision is ~0.5, not ~0.73")
 ap.add_argument("--collapse_legal", action="store_true", help="France rules: collapse dotted legal forms (S.A.R.L.) before comparing names")
@@ -300,6 +301,20 @@ if a.first_min:
           .join(pred.select("s1").unique(), on="s1", how="anti").join(pred.select("m").unique(), on="m", how="anti").join(tec, on="s1"))
     add = ex.sort("p", descending=True).unique("m", keep="first", maintain_order=True).group_by("s1", maintain_order=True).first()
     add = add.filter(pl.col("p") >= pl.col("country").replace_strict(fm, default=1.1, return_dtype=pl.Float64)).select("s1", "m")
+    if a.first_skip_ea_ties:
+        # empty-address records whose core name is the name of 2+ S1 in the country: the empty S1 owns such a tie no more often
+        # than its same-name twin (train), so the pick is a coin flip that costs 1.0 when the empty S1 is a true singleton
+        stopw = ["inc", "llc", "ltd", "corp", "corporation", "co", "company", "pvt", "private", "limited", "llp", "lp", "pc", "pa", "plc",
+                 "pllc", "incorporated", "sarl", "sas", "sasu", "sa", "eurl", "sci", "snc", "ei", "the", "and", "of", "et", "de", "des",
+                 "du", "la", "le", "les", "d", "l", "s", "a"]
+        ck = (pl.col("business_name").fill_null("").str.normalize("NFKD").str.replace_all(r"\p{M}", "").str.to_lowercase()
+              .str.replace_all(r"[^\p{L}\p{N}]+", " ").str.strip_chars().str.split(" ")
+              .list.eval(pl.element().filter(~pl.element().is_in(stopw) & (pl.element() != ""))).list.unique().list.sort().list.join(" "))
+        nsn = read_source(os.path.join(dd, "test", "test_source1.tsv")).select("country", ck.alias("ck")).group_by("country", "ck").len("nsn")
+        ea = (pl.concat([read_source(os.path.join(dd, "test", f"test_source{k}.tsv")) for k in (2, 3)])
+              .filter(pl.col("business_address").fill_null("").str.strip_chars() == "").select(pl.col("entity_id").alias("m"), "country", ck.alias("ck")))
+        ties = ea.join(nsn.filter(pl.col("nsn") >= 2), on=["country", "ck"]).select("m")
+        n0 = add.height; add = add.join(ties, on="m", how="anti"); log("first-match: skipped empty-address same-name ties:", n0 - add.height)
     pred = pl.concat([pred, add]).unique(maintain_order=True); log("first-match adds for S1 still empty:", add.height, fm)
 s1_ids = tec["s1"].to_list()
 cand = te.select("s1", "m")

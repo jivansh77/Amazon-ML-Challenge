@@ -975,3 +975,15 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   +0.00008-0.00027 over v13 (raw vs calibrated val x 0.85 US/India share).
 - Full-band Qwen job (`yoddhas-llm-qwen7b-g6e-all-0926-2053`) has been pending for capacity since 26 Sep 20:53 UTC and never ran;
   v13/v14 include the g5b Qwen scores.
+- **Count-prior tie resolution (Kavya's research note), checked on full train** (every owner present, like test; val cannot
+  measure ties because the same-name twin is almost never a val S1). There are 99k empty-address records whose name is
+  shared by 2+ S1s, and one of those S1s owns the record 92.7% of the time. For 2-way ties with unequal address-match counts:
+  - the S1 with 0 address matches owns the record only 18-29% of the time, against 61-73% for the other S1. It is usually
+    a true singleton, so the proposed "give n=0 members a tied record" rule is wrong;
+  - with both S1s at >= 1, the smaller one owns it 46-70% of the time (the note's direction, but below its own 0.75 bar).
+  - No-go.
+- **Effect on v14.** 187 of v14's 904 first-match picks are such empty-address same-name ties. On raw val they come out even
+  (29 picks: 15 right, 13 on true singletons; +0.000012). On calibrated val they look positive only because the correction
+  hides the twin.
+  - **`avg_ce4_v14b`** = v14 without them (`--first_skip_ea_ties`): v13 + 717 US/India pairs, 5,837,577 matches, validator
+    PASS. Val first-match delta: raw +0.000084, calibrated +0.000177.
