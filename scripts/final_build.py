@@ -31,6 +31,9 @@ ap.add_argument("--e_margin", type=float, default=15.0)
 ap.add_argument("--first_min", default="", help="S1 with no match after decoding: add its best exclusive candidate when p >= this "
                 "(per country, e.g. US=0.6,India=0.6,France=0.6); for an empty S1 the F0.5 break-even precision is ~0.5, not ~0.73")
 ap.add_argument("--collapse_legal", action="store_true", help="France rules: collapse dotted legal forms (S.A.R.L.) before comparing names")
+ap.add_argument("--extra_pairs", default="", help="parquet files of (s1, m) pairs from an extra candidate route (e.g. the native-script route, "
+                "scripts/native_route.py); a pair is added when its record is still unclaimed after decoding and rules, and it is added to "
+                "the candidate file as well")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 dd = find_dataset_dir(a.data)
@@ -287,10 +290,17 @@ if rules:
                      & ((pl.col("delta") < 0) | (pl.col("delta") > 100)))
         add = h.sort("bp", descending=True).group_by("m").first().select("s1", "m")
         pred = pl.concat([pred, add]).unique(maintain_order=True); log("HNK kept-qualifier changed-number adds:", add.height)
+xtra = None
+if a.extra_pairs:
+    xp = pl.concat([pl.read_parquet(f, columns=["s1", "m"]) for f in a.extra_pairs.split(",")]).unique()
+    xtra = xp.join(pred.select("m").unique(), on="m", how="anti").join(tec.select("s1"), on="s1")
+    pred = pl.concat([pred, xtra]).unique(maintain_order=True); log("extra-route adds (unclaimed records):", xtra.height, "of", xp.height)
 s1_ids = tec["s1"].to_list()
 cand = te.select("s1", "m")
 if rules and "OOC" in rules:
     cand = pl.concat([cand, extra])
+if xtra is not None:
+    cand = pl.concat([cand, xtra]).unique(maintain_order=True)
 write_id_lists(f"{a.out}/matching_results.tsv", s1_ids, pred, "matched_entity_ids")
 write_id_lists(f"{a.out}/candidate_pairs.tsv", s1_ids, cand, "candidate_entity_ids")
 pred.write_parquet(f"{a.out}/pred.parquet")

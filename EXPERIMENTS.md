@@ -798,3 +798,33 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   of the LB-confirmed France suffix matches (their blend is ~0.007, the cut starts at 0.05), so it cannot be checked on
   the France classes either.
 - **Final candidate: `avg_ce4_v3`** (US/India = avg_ce4, France = v3 rules).
+
+## After 0.98809: remaining-loss audit and the native-script route (27 Sep, 09:00-11:00 UTC)
+- Where US/India lose F0.5 (val, 96,116 S1 with candidates; 0.99010): 73% of the loss is missed matches on S1 that have other
+  matches (9,751 FN), 19% is 179 non-singleton S1 predicted empty; FPs are small (254 + 13 on singletons). Val S1 without any
+  candidate (half of the singletons) are not in the val file, so all-S1 val is ~0.9904; US/India test predicted k-distributions
+  equal val (US 3.38 vs 3.37, India 3.35 vs 3.35), so France is at about 0.975 on the LB (~4,000 S1-units below US level).
+- Missed val records: empty-address in candidates 5,366, not in candidates 1,618; other not in candidates 1,837 (native
+  script 618, invented single-token names 608, websites 156, other 456); other in candidates 1,191.
+- IDs carry no generation order (Spearman S1 id vs matched id 0.0008 / -0.0002).
+- Empty-address records: 97.7% are true matches in train and the test rate per S1 equals train (US 0.167), but only 51-59% are
+  claimed in test (France 51%) and ~55% in val: the rest are ties. A name-only assignment model over the full train S1 pool
+  (char-trigram kNN + rapidfuzz + margins, 2-fold) is 98.8% precise on 44% of all empty-address records, but its picks among
+  the records the pipeline leaves unclaimed are only 52-70% precise (val -0.00003..-0.001); none are outside the candidate
+  lists. Legal-form tie-breaker for same-name ties (unique canonical legal form, nsn 2-3): 95 val adds at 79%, +0.00003. Not used.
+- France class census against US/India true rates: the France noise profile differs (house numbers rarely change, 13x more
+  acronym names, which are 99.5% matches in US/India); unclaimed France same-name records at another street are generic
+  "City + Category" names on different streets; claimed pure adds / swaps are suffix-list words, typos and English
+  organisation words (matches in US/India). Unclaimed below-threshold classes are 35-62% precise on US/India val. No rule.
+- **Native-script route (`scripts/native_route.py`, India).** Transliterate with the pipeline normaliser, top S1 of the country
+  by name (char 3-gram TF-IDF, 0.6) + address (word TF-IDF, 0.4): the owner is in the top 20 for 98.1% of owned train records
+  and first for 96.0%. A classifier on the top-5 pairs (train labels, 2-fold) is 99.8% precise at q >= 0.9 on all records.
+  Val (exact, India val S1): adds for unclaimed records at q >= 0.9 are 91.9% precise overall, but pairs the pipeline had
+  already scored and rejected are only 15% right; restricted to out-of-candidate pairs: 346 adds, 97.7% precise, val F0.5
+  +0.00033 (India 0.98926 -> 0.99009; q >= 0.8: +0.00034, q >= 0.95: +0.00031). Test: 8,480 out-of-candidate adds at
+  q >= 0.9 (1.05% of India S1 vs 0.9% on val; test has 26% more native records per S1 than train, i.e. more decoys).
+  Expected LB about +0.0003-0.0004.
+- `avg_ce4_v4` = `avg_ce4_v3` + the 8,480 native adds (`--extra_pairs`, also added to the candidate file); the v3 part
+  reproduces with 0 pair differences; validator PASS with --check-ids.
+- Running on AWS (`yoddhas-route-oocand-0927-1036`, ml.r5.24xlarge): the same route for all non-native, non-empty-address
+  US/India/France records outside the current matches.
