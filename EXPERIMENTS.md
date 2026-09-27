@@ -695,3 +695,23 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - Synthetic CE v2 (`yoddhas-ce-syn2-fr-0927-0433`): all words, decoy words only with a number shift, no
   Compagnie, +40k empty-address matches and +20k empty-address category swaps, real low-score negatives only with
   an address.
+- Synthetic CE v2 as the France CE (with rules A2/HN_A/D/E after): +14,612 empty-address France pairs (France would
+  claim ~81% of its empty-address records vs 59% in the US: over-claiming chains/orphans), -2,113 multi-word
+  changes; US/India val band AUC 0.9517 (base3 0.9527). Rejected.
+- Kavya's synthetic CE (`kavyachetwani/syn-fr-scores`, 341k of our 480k France CE pairs) as the France CE: +3,760 /
+  -7,606 France pairs; removes clear matches (1,543 same-core pairs such as "Pharmacie Sainte" / "Pharmacie
+  Sainte SCI" at the same address, 1,067 OCR-typo pairs) and ~1,400 more changed-number pairs than HN_A; its own
+  US/India val is 0.98862 vs 0.98942. Rejected.
+
+## Label-free France census (27 Sep morning)
+- Candidate coverage per S1: France 3.91 records vs US 3.84 / India 3.73 (no blocking gap).
+- Unclaimed in-candidate records per S1: France 0.70 vs US 0.54; the excess is category swaps (+0.098),
+  "+france" (+0.025) and different names (+0.048): known decoy classes, not missed matches.
+- 5,672 unclaimed France records with the same core name and number are generic "City + Category" names on a
+  different street (different businesses); claimed France same-name pairs almost all share the street.
+- The current blend's val and test band densities now match for US/India (ratio ~1.0 in every band >= 0.7),
+  so US/India likely score their val (~0.990) on the LB and the gap is France.
+- Generator "rename" op: 1.6% of US/India true matches get an invented single-token name at the same address.
+  France has the same rate of invented-name + same-number candidates (0.077 per S1, US 0.077) but claims 71%
+  of those records vs 91% (US). Rule "add unclaimed invented-name, same number, same street" is only 19% precise
+  on US/India val (the generator also makes invented-name decoys at the same address): val -0.00215. Not used.
