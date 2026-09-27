@@ -987,3 +987,20 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   hides the twin.
   - **`avg_ce4_v14b`** = v14 without them (`--first_skip_ea_ties`): v13 + 717 US/India pairs, 5,837,577 matches, validator
     PASS. Val first-match delta: raw +0.000084, calibrated +0.000177.
+
+## France empty-S1 audit; v15 (27 Sep, 15:05-15:20 UTC)
+- **Empty S1 after v14b:** France 15,558 (6.00%), US 5.73%, India 5.75% (train singleton rate 5.58%).
+- **Records at the empty S1's own number + street + city:** 29% of France empty S1 have at least one, vs 6.7% (US) and 5.4%
+  (India). Almost all are claimed by, or belong to, another tenant of a multi-tenant address (a "Maison des Associations"
+  can hold 100+ S1s), e.g. "Motoamis.Com" -> "Moto Amis SARL". Not a gap.
+- **Best unclaimed candidate (blend >= 0.3, 1,124 France empty S1):**
+  - ~430: records without an address or house number, mostly generic-name ties. Train: an empty S1 rarely owns a tie.
+  - ~250: high-scoring in-place category swaps and same-name records with the number shifted, i.e. the France decoys that
+    DP / HN_A drop.
+  - A few web handles and suffixes.
+  - No clean class. Adding these back would undo LB-validated rules without labels.
+- **Web handles spelling an S1's full name:** France claims 96.6% (US 94.5%, India 96.9%). No gap.
+- **Acronyms at a shared address**, exactly one tenant with those initials: train 99.7% (US 334) / 100% (India 346); test
+  claims US 98.4%, India 99.4%, France 78.2%. 371 France records unclaimed; 7 of them go to S1s that were empty.
+  `--mode acr_shared`.
+- **`avg_ce4_v15`** = v14b + 371 France acronym adds: 5,837,948 matches, validator PASS, no record on two S1s.
