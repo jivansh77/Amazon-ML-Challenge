@@ -1078,3 +1078,10 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   Test adds on records unclaimed in v16: France 483 (A) + 199 (B), US 89, India 52 = 823 (US/India already claim most of these).
 - **`avg_ce4_v17`** = v16 + `artifacts/v17/legal_tie_adds.parquet` (`scripts/legal_tie.py`): 5,840,027 matches, validator PASS
   with --check-ids. Expected about +0.00002-0.00003 over v16.
+- **Rejected-subset check (val, 17:25 UTC).** The tie-break adds only records the model left unclaimed, so its all-records train
+  precision overstates it. On val, among Case A records the decoder did not claim: US n0 = 0 81.8% (11), n0 = 1 82.6% (46),
+  n0 = 2 72.7% (33); India 50% (2) / 37.5% (8). The model's claimed acronym-letter-insertion pairs are 97.9% right on val (its
+  picks inside that class are informed), so France's are not dropped.
+- **`avg_ce4_v17b`** (recommended) = v16 + `artifacts/v17/legal_tie_adds_v17b.parquet`: v17's adds without India (52) and without
+  the France adds whose stage-2 p < 0.5 (57; the model clearly rejected them, most France adds have p 0.84-0.97 and were pulled
+  under the threshold by the French CE only). 714 pairs (France 625, US 89), 5,839,918 matches, validator PASS.
