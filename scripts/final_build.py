@@ -21,7 +21,8 @@ ap.add_argument("--data", required=True); ap.add_argument("--runs", required=Tru
 ap.add_argument("--ce", required=True); ap.add_argument("--ce_fr", required=True)
 ap.add_argument("--w", type=float, default=0.6)
 ap.add_argument("--thr", default="US=0.8,India=0.8,France=0.87")
-ap.add_argument("--rules", default="A2,HN_A,D", help="France rules to apply (empty = none)")
+ap.add_argument("--rules", default="A2,HN_A,D", help="France rules to apply (empty = none); E = empty-address records")
+ap.add_argument("--e_margin", type=float, default=15.0)
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 dd = find_dataset_dir(a.data)
@@ -52,10 +53,10 @@ lc = [c for c in ens.columns if c.startswith("l")]; wc = [c for c in ens.columns
 ens = ens.select("s1", "m", (pl.sum_horizontal(lc) / pl.sum_horizontal(wc)).cast(pl.Float64).alias("lce"))
 fr = pl.concat([pl.read_parquet(p, columns=["s1", "m", "ce"]).with_columns(pl.col("ce").cast(pl.Float64)) for p in a.ce_fr.split(",")]).unique(["s1", "m"], keep="last").select("s1", "m", L("ce").cast(pl.Float64).alias("lce"))
 ens = pl.concat([ens.join(fr, on=["s1", "m"], how="anti"), fr])
-te = ts.join(ens, on=["s1", "m"], how="left").with_columns(
+te = ts.with_columns(pl.col("p").alias("p_model")).join(ens, on=["s1", "m"], how="left").with_columns(
     p=pl.when(pl.col("lce").is_null()).then(pl.col("p")).otherwise(1 / (1 + (-(a.w * L("p") + (1 - a.w) * pl.col("lce"))).exp()))).drop("lce")
 thr = {k: float(v) for k, v in (x.split("=") for x in a.thr.split(","))}
-pred = decode_by_country(te, thr, tec)
+pred = decode_by_country(te.select("s1", "m", "p"), thr, tec)
 log("decoded:", pred.height, "pairs; thresholds", thr)
 pred.write_parquet(f"{a.out}/pred_before_rules.parquet")
 
@@ -103,6 +104,23 @@ if rules:
         drop = pred.join(cp.filter((pl.col("nd") <= 1) & (pl.col("na") == 1) & pl.col("aw").is_in(CATEGORY) & (pl.col("same_hn") == True)),
                          on=["s1", "m"]).select("s1", "m")
         pred = pred.join(drop, on=["s1", "m"], how="anti"); log("D category-swap drops:", drop.height)
+    if "E" in rules:       # France records WITHOUT an address, unclaimed, whose name clearly points to one S1 (margin over the
+                           # 2nd candidate): same core words and the stage-2 model alone above the France threshold, or a
+                           # French noise suffix added (A2 needs a house number, so it never covers these)
+        emp = t23.filter(pl.col("a") == "").select(pl.col("entity_id").alias("m"))
+        e = te.select("s1", "m", "p_model").join(emp, on="m").join(s1c.select("s1", "n2", "core2"), on="s1").join(
+            t23.select(pl.col("entity_id").alias("m"), "n", "core"), on="m")
+        e = e.with_columns(pl.Series("sim", process.cpdist(e["n"].to_list(), e["n2"].to_list(), scorer=fuzz.token_sort_ratio, workers=-1), pl.Float64))
+        e = e.sort("sim", descending=True).group_by("m", maintain_order=True).agg(
+            pl.all().first(), pl.col("sim").get(1, null_on_oob=True).fill_null(0).alias("sim2"))
+        e = e.join(pred.select("m").unique(), on="m", how="anti").filter(pl.col("sim") - pl.col("sim2") >= a.e_margin)
+        e = e.with_columns(pl.col("core2").list.set_difference(pl.col("core")).list.len().alias("nd"),
+                           pl.col("core").list.set_difference(pl.col("core2")).alias("added")).with_columns(
+                           pl.col("added").list.len().alias("na"), pl.col("added").list.first().alias("aw"))
+        same = e.filter((pl.col("nd") == 0) & (pl.col("na") == 0) & (pl.col("p_model") >= thr["France"]))
+        suf = e.filter((pl.col("nd") <= 1) & (pl.col("na") == 1) & pl.col("aw").is_in(SUFFIX))
+        add = pl.concat([same.select("s1", "m"), suf.select("s1", "m")])
+        pred = pl.concat([pred, add]).unique(maintain_order=True); log("E empty-address adds:", same.height, "same core,", suf.height, "suffix")
 s1_ids = tec["s1"].to_list()
 write_id_lists(f"{a.out}/matching_results.tsv", s1_ids, pred, "matched_entity_ids")
 write_id_lists(f"{a.out}/candidate_pairs.tsv", s1_ids, te.select("s1", "m"), "candidate_entity_ids")

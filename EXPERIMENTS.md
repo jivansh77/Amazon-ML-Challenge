@@ -683,3 +683,15 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   **base3 + base4 + base4b (equal logit average) 0.99019** (top-5 route + base3 = 0.98998, i.e. +0.00021).
 - Candidate `avg_ce4_D` (route average + 3-CE ensemble + French CE + A2/HN_A/D): validator PASS; vs `kv_HN_A`
   12,600 S1 differ; vs `avg_D` only US/India change (3,181 S1).
+
+## France empty-address records (rule E, 27 Sep)
+- Records without an address whose name clearly points to one S1 (token-sort margin >= 15 over the 2nd candidate):
+  claimed 84-97% in US/India but 55-94% in France. Unclaimed France ones with the same core words have stage-2 p
+  median 0.973 (75% >= 0.87); the French CE pulls them under the threshold. A2 never covers them (it needs a
+  house number).
+- Rule E (France only): unclaimed empty-address record, clear best S1, same core words and stage-2 p >= 0.87, or a
+  French noise suffix added (nd <= 1, na = 1). Adds 1,342 + 498 pairs (sampled pairs all look like matches).
+  Candidate `avg_ce4_DE`. Expected about +0.0001 (not LB-tested).
+- Synthetic CE v2 (`yoddhas-ce-syn2-fr-0927-0433`): all words, decoy words only with a number shift, no
+  Compagnie, +40k empty-address matches and +20k empty-address category swaps, real low-score negatives only with
+  an address.
