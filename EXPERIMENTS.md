@@ -651,3 +651,16 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - Empty-address records whose name equals 2+ S1 names are true matches 98.5% in train but claimed ~0% in test
   (every country): chains with orphan copies (test has 5.76 records per S1 vs 4.67 in train), undecidable;
   matches per S1 per source are spread (1+1 12%, 1+2 11%, 2+1 10%...), so counts cannot disambiguate.
+
+## Synthetic French cross-encoder (AWS `ml.g5.2xlarge`, e5-base round 3 continued)
+- 560k pairs: 300k US/India + 260k France (80k real confident matches, 60k suffix adds with the number kept,
+  50k category swaps, 20k decoy words +/- number shift, 20k number shifts, 30k real low-score pairs). Words never
+  added in training: groupe, associes, club, ecole, amicale, comite, amis, sportive.
+- France pseudo-val: trained words AUC 1.000; held-out: associes accepted 72.5% (AUC 0.954 vs the held-out
+  category swaps), held-out category swaps rejected (<=9%), **groupe rejected (1.3%)** (read as the trained decoy
+  word "groupement"); held-out AUC overall 0.516. US/India val band AUC 0.9509 (base3 0.9527); blend with base3
+  0.98999 vs 0.98996 (noise).
+- As the France CE instead of the French CE: +12,325 / -10,830 France pairs; the adds are the suffix adds the rules
+  already make, the removals are 5,507 empty-address pairs (a bias from the real low-score negatives; empty-address
+  records are true matches 97.7% in train), 3,005 word swaps (category swaps = kv_D, plus unverified decoy-word
+  assumptions) and 1,694 changed numbers (= HN_A). Nothing validated beyond the rules. Rejected.
