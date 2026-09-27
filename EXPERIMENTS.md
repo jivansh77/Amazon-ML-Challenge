@@ -769,8 +769,11 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 |---|---|---|
 | avg_ce4_DE (previous candidate: A2, HN_A, D, E) | 832,962 | France +3,171 / -2,728 |
 | **avg_ce4_v2** (A2 25,833, A2F 5,764, HN_A -4,016, DP -2,559, E2 2,096, OOC 6,760) | 844,442 | France +15,873 / -3,950 |
-| **avg_ce4_v2h** (+ HNK 2,853: 652 number->1, 1,158 >+100, 1,043 smaller) | 847,295 | |
+| **avg_ce4_v2h** (+ HNK 2,853: 652 number->1, 1,158 >+100, 1,043 smaller) | 847,295 | **LB 0.98809** |
 
 US/India are identical in all three (avg_ce4: all-val F0.5 0.98997 -> 0.99010). Validator PASS with --check-ids. Files in
 Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +0.0003, OOC +0.00025, E2 +0.0001, HNK
 +0.0002, avg_ce4 US/India +0.0002.
+
+- **LB: `avg_ce4_v2h` = 0.98809** (previous best 0.986665, +0.00143; label-free estimate was +0.0013). US/India part (avg_ce4)
+  is ~+0.0002 by validation, so the France v2 rules gave ~+0.0012 (France F0.5 about +0.008).
