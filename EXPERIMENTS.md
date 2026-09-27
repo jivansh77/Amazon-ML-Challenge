@@ -715,3 +715,9 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   France has the same rate of invented-name + same-number candidates (0.077 per S1, US 0.077) but claims 71%
   of those records vs 91% (US). Rule "add unclaimed invented-name, same number, same street" is only 19% precise
   on US/India val (the generator also makes invented-name decoys at the same address): val -0.00215. Not used.
+- Twin test (is a record with added word w accompanied by another record with the same w on the same S1?):
+  France category decoys 0.2%, suffix matches 3.4%, '+france' 3.8% - but on US/India val labels the signal does not
+  hold (decoy word "enterprises": 2% matches, 36% twins; corr(match rate, twin rate) over words -0.30). Not used.
+- French vocabulary the normaliser mishandles (legal form "EI" not in LEGAL, "Ste" -> suite, "Dr" -> drive): rare
+  (EI in 1.6% of France S1 names, Sainte/Docteur ~0.5% of addresses) and their S1s have the usual claims per S1
+  (EI 3.26, Docteur 3.19, Sainte 3.19 vs 3.21 overall). No recall gap; not worth a pipeline rerun.
