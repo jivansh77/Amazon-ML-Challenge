@@ -1004,3 +1004,8 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   claims US 98.4%, India 99.4%, France 78.2%. 371 France records unclaimed; 7 of them go to S1s that were empty.
   `--mode acr_shared`.
 - **`avg_ce4_v15`** = v14b + 371 France acronym adds: 5,837,948 matches, validator PASS, no record on two S1s.
+- **France threshold 0.87 -> 0.86 / 0.85** (the same build otherwise; DP / HN_A still run): +428 / +782 France pairs.
+  - Of those, 114 / 221 are same-name ties with no address and 113 / 216 are at addresses shared by 2+ S1s, i.e. coin flips
+    on S1s that already have matches (wrong ~ -0.2, right ~ +0.1). Blanket lowering is ~0 EV; not applied.
+  - **`avg_ce4_v15b`** = v15 + the 288 safe 0.85 adds (`scripts/france_thr_safe.py`): no-address records with a name unique
+    to that S1 (68) and S1s alone at their address (220). 5,838,236 matches, validator PASS. Expected about +0.00001-0.00002.
