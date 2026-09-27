@@ -1009,3 +1009,32 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
     on S1s that already have matches (wrong ~ -0.2, right ~ +0.1). Blanket lowering is ~0 EV; not applied.
   - **`avg_ce4_v15b`** = v15 + the 288 safe 0.85 adds (`scripts/france_thr_safe.py`): no-address records with a name unique
     to that S1 (68) and S1s alone at their address (220). 5,838,236 matches, validator PASS. Expected about +0.00001-0.00002.
+
+## France gap audit in a fresh container; shared addresses: sub-numbers and the city key; v16 (27 Sep, 15:35-17:20 UTC)
+- **Where France is short.** Predicted matches per S1 (v15b): France 3.315, US 3.385, India 3.375 (train truth 3.46 in both
+  countries, whatever the S1's name-twin status). By the number of S1s sharing the S1's core name (nsn): France 3.379 / 3.321 /
+  3.242 for nsn 1 / 2 / 3+, US 3.435 / 3.349 / 3.290. France has 43% of its S1s in nsn >= 3 (US 28%): generic "City + Category"
+  names.
+- **Empty-address records** (per 1,000 S1, unclaimed; train truth 95-99% matches in every tie class): France 24.7 (no S1 with
+  that core name) + 7.3 (2-way name tie) + 46.5 (3+-way) = 80.6, US 66.9, India 60.6. The France excess is ties between
+  same-name S1s, which carry no signal (count prior: no-go, above). Claimed 2-way ties are informed picks (legal form, word
+  order), not coin flips, so none are dropped.
+- **Records near unique-name France S1s** (sharing a core token with df <= 2): the unclaimed ones are the known decoy classes
+  (in-place category swaps at the same number, suffix / qualifier / legal form with the number shifted up, same name in
+  another city, "Participations / Holding / Distribution" qualifiers on another street). Records at the S1's number + city with a
+  typo'd street are claimed 99.9% when the name is the same; the unclaimed ones are category swaps. No new class.
+- **Precision side:** claimed France pairs where another S1 with the record's exact core name sits at the record's exact
+  address: 3 (misassignments are not a lever).
+- **Shared addresses, sub-numbers.** Single-token records (invented names, acronyms) at an address with 2+ tenants cannot be
+  placed by the name. Train (all owners present): when the record carries a unit (Unit / Suite / Apt / # ...) or a French
+  sub-number (bis / ter / A / B) and exactly one tenant at the same number + street + city has the identical unit + sub-number,
+  that tenant owns the record 98.8% (US, 768) / 96.3% (India, 217); without a unit on the record 62% / 80% (not used). At
+  unique addresses a unit mismatch is still 83-89% true, so no existing adds are removed. Test unclaimed: US 0, India 10,
+  France 287 (e.g. "CSA | 10BIS R. Alexis Maneyrol" -> "Collège Sainte Azureen | 10 Bis Rue Alexis Maneyrol").
+- **v15 acronym rule, city key.** v15 keyed the address on the set of all non-numeric parts, so a record naming the
+  departement ("Loire-Atlantique", "Nord", "Gironde") instead of the region, or dropping it, never met its S1. With the city
+  recognised from the city list: 709 more unclaimed acronyms at shared addresses with exactly one tenant holding those initials
+  (v15 had 371), 671 after skipping sub-number / unit conflicts and the records the unit rule already places.
+- **`avg_ce4_v16`** = v15b + `artifacts/v16/fr_unit_adds.parquet` + `artifacts/v16/fr_acr_city_shared_adds.parquet` (the same
+  `--extra_pairs` semantics: unclaimed records only, one S1 per record, earlier file wins): +968 (France 958, India 10),
+  5,839,204 matches, validator PASS with --check-ids. Expected about +0.00003 over v15b (~970 adds at ~97-99%).
