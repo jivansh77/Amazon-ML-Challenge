@@ -9,14 +9,16 @@
 ## 1. Executive Summary
 
 We resolve every Source 1 business against ~10M Source 2/3 records with a four-step pipeline:
-1. **Blocking.** Two complementary retrievers (word TF-IDF and multilingual dense retrieval), unioned and cut by a learned first-stage model to **4.16 candidates per S1**, keeping **98.5% of true matches**.
-2. **Scoring.** A two-stage XGBoost model scores the candidates using similarity, competition and "decoy-signature" features.
-3. **Uncertain cases.** A fine-tuned multilingual cross-encoder re-scores the ~19% of pairs the model is unsure about.
-4. **Decoding.** One exclusivity-aware decode, with per-country thresholds corrected for the test set's higher density of lookalike records.
+1. **Blocking.** Three complementary retrievers (word TF-IDF, multilingual dense retrieval, and a reverse name route for records without an address), unioned and cut by a learned first-stage model to **4.41 candidates per S1**, keeping **98.9% of true matches**.
+2. **Scoring.** A two-stage XGBoost model scores the candidates using similarity, competition and "decoy-signature" features. Two pipeline runs (reverse-name route top 5 and top 10) are averaged.
+3. **Uncertain cases.** An ensemble of three fine-tuned multilingual-e5-base cross-encoders re-scores the pairs the model is unsure about (a French-adapted e5-small does it for France).
+4. **Decoding.** One exclusivity-aware decode with per-country thresholds, then label-free generator rules for France measured on the test data itself.
 
 Two findings drove most of the gain:
 - **The unmatched records are generated lookalikes ("decoys").** These are branches of the S1 business with an added qualifier word and a shifted house number. We model that signature explicitly.
-- **France has no training labels.** We learn its decoy vocabulary (Ateliers, Sainte, city names, "France", …) from confident test predictions, with no external data.
+- **France has no training labels.** We learn its decoy vocabulary from confident test predictions, and we measure how France's data generator differs from US/India directly on the test records (house numbers almost never change on a French match, French noise suffixes, category-word swaps are decoys). No external data and no hand labelling.
+
+Validation macro F0.5 (US/India, held-out S1): **0.9902**. Public leaderboard: **0.98667** (best submitted), final file described here.
 
 ---
 
@@ -92,9 +94,10 @@ All blocking runs **within country**. Every step is vectorised and chunked; the 
   1. **Word TF-IDF.** Name core (legal forms and titles removed) plus address tokens, over normalised text. Tokens in more than 1% of records are dropped. Top-30 cosine neighbours per S1 via `sparse_dot_topn`.
   2. **Dense retrieval.** `intfloat/multilingual-e5-small` (MIT, 118M parameters) embeddings of "name | address", exact top-k by blocked GPU matrix products. It handles transliterations, abbreviations and reordering that share no tokens.
   3. **Reverse dense.** The top-2 S1 for each S2/S3 record. This recovers name-only records whose generic names tie with many lookalikes in the forward direction.
-  4. **Learned filter (stage 1).** The union of TF-IDF top 20, dense top 20 and reverse top 2 (~34 pairs per S1, recall 0.9848) is scored by the stage-1 XGBoost model. Stage 2 keeps each S1's top 15 with p₁ ≥ 0.005.
+  4. **Reverse name route.** For every S2/S3 record **without an address** (3.3% of records, but 64% of the true pairs the first three routes missed), the top-k S1 of the same country by character 3-gram TF-IDF on the name. Two runs use k = 5 and k = 10.
+  5. **Learned filter (stage 1).** The union of TF-IDF top 20, dense top 20, reverse top 2 and the reverse name route is scored by the stage-1 XGBoost model. Stage 2 keeps each S1's top 15 with p₁ ≥ 0.005.
 
-- **Candidate pairs generated:** **7,202,941 test pairs (4.16 per S1)**. This is the exact set the final model scores, and it is what `candidate_pairs.tsv` contains. 54k S1 (3.1%) end up with no candidates.
+- **Candidate pairs generated:** **7,637,679 test pairs (4.41 per S1)**: the union of the pairs the two pipeline runs score. This is the exact set the final model scores, and it is what `candidate_pairs.tsv` contains.
 
 - **How we ensured true matches were not lost.** Recall was measured on the full training ground truth for every route and cut-off:
 
@@ -104,9 +107,10 @@ All blocking runs **within country**. Every step is vectorised and chunked; the 
 | Dense top 30 | 0.958 |
 | TF-IDF 20 ∪ dense 20 | 0.9795 |
 | + reverse top 2 | 0.9848 |
-| after the stage-1 filter (validation) | **0.9849** |
+| after the stage-1 filter (validation) | 0.9849 |
+| + reverse name route (top 5), after the filter | **0.9888** |
 
-The filter removes ~88% of the pairs at no measurable recall cost. The oracle macro-F0.5 of the final candidate set is 0.9953.
+The filter removes ~88% of the pairs at no measurable recall cost. The oracle macro-F0.5 of the candidate set (a perfect scorer on these candidates) rose from 0.9953 to 0.9964 with the reverse name route (0.9967 with k = 10).
 
 Text normalisation before blocking and matching:
 - Accent stripping, lowercasing, OCR digit fixes, merging of spaced initials ("S.C.I." → "sci").
@@ -138,12 +142,14 @@ Text normalisation before blocking and matching:
 - **Two-stage XGBoost** (GPU, hist, lossguide, 255 leaves, eta 0.08, early stopping). Stage 1 trains on 45% of the training S1, stage 2 on a disjoint 45%, and 10% is held out for validation. Easy negatives are subsampled (rate 0.2) with compensating weights.
 - **Cross-encoder.**
   - `intfloat/multilingual-e5-base` (MIT, 278M parameters) fine-tuned as a pair classifier on "name | address" text.
-  - Trained in rounds on hard pairs of fresh training S1 that are never in the validation split. Each round is 160k S1 and 2.2M pairs (24% positives), 150–170 T4 minutes.
-  - Each round starts from the previous checkpoint.
+  - Trained in rounds on hard pairs of fresh training S1 that are never in the validation split. Each round is 160k S1 and 2.2M pairs (24% positives), 150–300 GPU minutes, and starts from the previous checkpoint (lr 3e-5 → 2e-5 → 1.5e-5).
+  - Lineage: round 1 → round 2 → round 3 (new S1 slice, seed 9) and round 3b (seed 13) → round 4 (round 3 on the seed-13 slice) and round 4b (round 3b on the seed-9 slice). The final US/India model is the **equal logit average of rounds 3, 4 and 4b**.
   - The first small-model version (e5-small) is kept for France, where it is adapted to French (see below).
   - It re-scores pairs in the uncertain band 0.02 ≤ p < 0.998 (19% of pairs).
   - It is blended on the logit scale with weight 0.6 for XGBoost (chosen on validation).
-  - AUC on the uncertain band: XGBoost 0.965. The cross-encoder rises from 0.938 (e5-small) to 0.945 (e5-base) to 0.955 (e5-base, second round). Their blend reaches 0.975, so the two are complementary.
+  - AUC on the uncertain band: XGBoost 0.962. The cross-encoder rises from 0.938 (e5-small) to 0.945 (e5-base) to 0.953–0.955 (rounds 3–4b). Their blend reaches 0.972, so the two are complementary.
+- **Two pipeline runs averaged.** The whole pipeline runs twice, with the reverse name route at k = 5 and k = 10; a pair's probability is the mean over the runs that scored it (clean validation +0.00013).
+- Larger or different models were measured and not kept: e5-large (band AUC 0.948), Qwen2.5-7B LoRA at 217k pairs (0.93).
 - CatBoost (0.9784) and random forest (0.9693) were weaker than XGBoost (0.9799) on identical features, and blending them did not help.
 - All models are MIT/Apache-licensed and far below 8B parameters.
 
@@ -153,11 +159,11 @@ Text normalisation before blocking and matching:
    - The expected true matches per S1 come from validation. France, which has no labels, uses the US/India average.
    - They are divided by the observed test pairs per S1 in that band. The result estimates the band's precision on test.
    - A pair improves macro F0.5 only if its precision exceeds ≈ F*/(1+β²) ≈ 0.78. Each country's threshold is the lowest band edge above which every band clears 0.78.
-   - Result: US 0.80, India 0.80–0.85, France 0.97. Validation alone would pick 0.75–0.80 everywhere.
+   - Result on the first model: US 0.80, India 0.80–0.85, France 0.97. With the decoy features and cross-encoders the validation and test band densities now agree for US/India (ratio ~1.0 in every band ≥ 0.7), so US/India use the validation optimum **0.80**.
 3. **Cross-check with a label-shift estimate.** Calibrate validation scores (isotonic), run EM on each country's test pair prior (Saerens et al.), and find where the corrected probability reaches 0.78.
    - It agrees for US/India (~0.74–0.78).
    - It suggests a lower France threshold (~0.84).
-   - The two estimators assume different things about the unlabelled country. The France threshold was therefore settled with public-leaderboard probes that change only French predictions (0.85 / 0.93 / 0.97 / 0.99).
+   - The two estimators assume different things about the unlabelled country. The France threshold was therefore settled with public-leaderboard probes that change only French predictions: 0.97 → 0.93 → 0.90 → **0.87**, each an improvement.
 
 **Transductive decoy words for unlabelled countries** (`fit_pseudo_odds.py`):
 1. Confident test predictions (blended p ≥ 0.99 as match, ≤ 0.05 as non-match) serve as labels for France. The same word log-odds are fitted on near-duplicate names.
@@ -169,7 +175,25 @@ Text normalisation before blocking and matching:
 **Cross-encoder adapted to France** (self-training, `ce_data.py --parts pseudo` + `ce_train.py --init_dir`):
 - The cross-encoder continues training for 30 minutes on 300k confident French test pairs (50/50) plus 13% of its original training pairs, at lr 2e-5.
 - Validation AUC is unchanged (0.938), so there is no damage to US/India.
-- On France it learns to reject swapped category words at the same address ("Biserica Loisirs" vs "Biserica Fetes"), the "+ Et Fils" branches, and same-name records at a different street.
+- On France it learns to reject swapped category words at the same address ("Biserica Loisirs" vs "Biserica Fetes") and same-name records at a different street.
+
+**France's generator, measured on the test data** (`scripts/final_build.py`, all rules label-free):
+
+The data generator treats countries identically in structure (on train, US and India agree to 4 decimals on matches per S1 and singleton rate), but France's noise vocabulary and rates differ, so a model trained on US/India errs on France in predictable directions. We measure each noise dimension on France's own confident predictions, correct it by the US/India ratio of confident-test rate to true-train rate, and compare:
+
+| Measured on test | US (true) | India (true) | France |
+|---|---|---|---|
+| House number changes on a true match | 12.4% | 23.7% | **~1.1%** |
+| Noise suffix words | center, services, partners, incorporated | same | **fils, groupe, développement, associés, cie, services, frs** |
+| Decoy qualifier words | holdings, care, clinic, … (shift the house number) | same | centre, service, fédération (shift the number ~60%) and **category swaps** (club → école, same number) |
+
+Rules applied after decoding, France only:
+1. **A2 (suffix adds).** An unclaimed record whose name drops ≤ 1 word of its best S1 (by name + address similarity), adds exactly one French noise suffix (fils, groupe, développement, associés) and keeps the house number is matched to that S1. The training word odds call these words decoys (−4 to −7), so the model rejected them.
+2. **HN_A (changed house number).** A claimed France pair whose first house number differs and whose blended probability is below 0.998 is dropped: French matches change the number only ~1% of the time.
+3. **D (category swaps).** A claimed France pair that replaces one S1 word by a category word (club, comité, amicale, école, …, or "France") at the same number is dropped. A leaderboard probe that *added* 23.8k such pairs lost 0.0032, confirming they are decoys. On India's labels, a true match never adds the country word to the name (0 of 3.06M), which settles "+ France".
+4. **E (empty addresses).** A France record without an address, unclaimed, whose name clearly points to one S1 (token-sort margin ≥ 15 over the second candidate) is matched when the names share every core word and the XGBoost probability alone is above the France threshold, or when the only change is a French noise suffix. US/India claim this record type 82–97% of the time; for France the French cross-encoder had vetoed it.
+
+Probes the leaderboard rejected, and ideas measured and dropped, are listed in section 5.
 
 ---
 
@@ -197,7 +221,12 @@ Text normalisation before blocking and matching:
 | + decoy features + e5-base cross-encoder | 0.9829 |
 | + France fix | 0.9831 |
 | France threshold 0.93 (on the baseline) | 0.9830, vs 0.98286 at 0.97 |
-| Final | [final] |
+| + cross-encoder round 3, France threshold 0.90 | 0.98443 |
+| France threshold 0.87 | 0.98452 |
+| + reverse name route (k = 5) | 0.98553 |
+| + France rules A2 + HN_A | **0.98667** |
+| Probe: + 23.8k French category-swap pairs (C1) | 0.98345 (rejected: they are decoys) |
+| Final (route average + cross-encoder ensemble + rules D and E) | [final] |
 
 **Unseen-country stand-in** (train on US only, validate on India):
 - F0.5 falls from 0.984 to 0.933. That confirms France's implied ~0.92 is a transfer problem, not bad luck.
@@ -205,12 +234,12 @@ Text normalisation before blocking and matching:
 - Self-training on pseudo-labels recovers nothing (0.9376 → 0.9358).
 - The same stand-in calibrates the value of an added pair against its precision (break-even ≈ 0.70). It shows France's band [0.93, 0.97) is only ~0.75 precise, so France stops at 0.93.
 - **Common false positives (wrong merges):**
-  - Generated branches that change a category word at the same address ("Rayon Comite SAS" vs "Rayon Musique SAS").
+  - Generated branches that change a category word at the same address ("Rayon Comite SAS" vs "Rayon Musique SAS"); rule D removes the single-word ones.
   - Branches that add a qualifier the model has not seen.
   - Same-name records at a different street with the same house number.
   - Records with an empty address and an exact name, which could be a branch or the entity itself.
 - **Common false negatives (missed matches):**
-  - Brand/trade-name records that share only the address ("Pessac Ecole SAS" vs "NOVIQUO").
+  - Brand/trade-name records that share only the address ("Pessac Ecole SAS" vs "NOVIQUO"). The generator renames 1.6% of true matches this way, but it also creates invented-name decoys at the same address: adding the unclaimed ones is only 19% precise on validation.
   - Heavy abbreviations or initials.
   - Empty-address name-only records with generic names (the largest blocking miss: 24% of TF-IDF misses).
   - Indic-script names without a dictionary entry.
@@ -223,7 +252,7 @@ Text normalisation before blocking and matching:
 | Wrong merges on S1 that have matches | 11% | |
 | Wrong merges on singletons | 2% | |
 
-  The final system is recall-limited on US/India and precision-limited on France.
+  The final system is recall-limited on US/India. France has the same structure but no labels; its remaining errors are spread over pairs where several noise operations combine.
 
 **What did not work** (each measured, then dropped):
 
@@ -238,6 +267,12 @@ Text normalisation before blocking and matching:
 | CatBoost / random forest / blends with XGBoost | ≤ XGBoost alone |
 | Expected-F0.5 decoder on the LB | 0.970 vs 0.973 for a plain threshold. It trusts validation calibration, which the test prior shift breaks |
 | Stage-3 stacker on the model + CE scores | +0.0003 on validation; not worth the complexity |
+| Importance weighting of training S1 towards the test mix | no gain |
+| France cross-encoder trained on the leaderboard-confirmed French classes | memorises the word lists: AUC 1.0 on seen words, 0.07 on held-out words |
+| Synthetic French pairs (generator ops applied to French records) for the cross-encoder | re-learns the rules; beyond them it encodes wrong assumptions (e.g. empty address = decoy) |
+| e5-large cross-encoder | band AUC 0.948; +0.00002 in the ensemble |
+| Qwen2.5-7B LoRA cross-encoder at 217k pairs | band AUC 0.93, lowers the blend |
+| "Twin" counts of the same added word as a decoy signal | contradicted by US/India labels |
 
 **Decoy duplication in detail:**
 - Virtual copies were made only of records that match no S1. A twin therefore identified a decoy, which leaks the label.
@@ -248,7 +283,7 @@ Text normalisation before blocking and matching:
 
 ## 6. Conclusion
 
-Entity resolution at this scale is won in the tails. Candidates are cheap to retrieve: two routes reach 98.5% recall with 4.2 pairs per S1. The hard part is telling a business from its generated branches, especially in a language without labels. Modelling the decoy signature, adding a cross-encoder for the uncertain band, and correcting thresholds for the test population's decoy density each gave measurable gains. Validation scores must be read with the test prior shift in mind.
+Entity resolution at this scale is won in the tails. Candidates are cheap to retrieve: three routes reach 98.9% recall with 4.4 pairs per S1, and a dedicated route for address-less records was the largest late gain. The hard part is telling a business from its generated branches, especially in a country without labels. Modelling the decoy signature, cross-encoders for the uncertain band, and measuring the unseen country's generator on its own test records (rather than self-training on the model's confident guesses) each gave measurable gains.
 
 ---
 
@@ -270,9 +305,11 @@ Entity resolution at this scale is won in the tails. Candidates are cheap to ret
 | `src/run.py` | stages norm / block / dense / train / test |
 | `src/ce_data.py`, `src/ce_train.py` | cross-encoder data, training and scoring |
 | `src/fit_pseudo_odds.py` | French decoy words from confident test predictions |
-| `src/blend.py` | model × cross-encoder blend, per-country thresholds, writes both output files |
+| `src/blend.py` | model × cross-encoder blend, per-country thresholds (used for the single-run files) |
+| `src/final_build.py` | final decode: averages the two runs, cross-encoder ensemble, French cross-encoder, per-country thresholds, France rules A2 / HN_A / D / E; writes both output files |
+| `src/artifacts/` | learned Indic→Latin dictionary, calibrated French word odds |
 
-The exact commands are in `README.md`: normalise + block, then dense retrieval, train, test, cross-encoder, French words + re-score, then blend.
+The exact commands are in `README.md`: normalise + block, dense retrieval, reverse name route + train, test (and France re-score), cross-encoders, then `final_build.py`.
 
 ### B. Additional Results
 
