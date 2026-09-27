@@ -721,3 +721,8 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
 - French vocabulary the normaliser mishandles (legal form "EI" not in LEGAL, "Ste" -> suite, "Dr" -> drive): rare
   (EI in 1.6% of France S1 names, Sainte/Docteur ~0.5% of addresses) and their S1s have the usual claims per S1
   (EI 3.26, Docteur 3.19, Sainte 3.19 vs 3.21 overall). No recall gap; not worth a pipeline rerun.
+- "+country" word, with labels: among 3,059,843 India true matches, the record NEVER adds "india" to its S1's
+  core name (0). 'S1 name + india' records do exist (35k), and the matched ones belong to a different S1 whose name
+  already contains India. So the generator's match noise never adds the country word: France '+france' records
+  (6,302 same-number single adds) are not matches of the S1 without "France"; the model rejects them (0.9%
+  claimed) and D drops the claimed ones. Settled; no change.
