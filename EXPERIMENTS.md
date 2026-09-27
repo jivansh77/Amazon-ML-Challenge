@@ -618,3 +618,111 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   51,936 new French band pairs were scored locally on CPU instead.
 - **LB: `nr_cebase3_frce_fr87` = 0.98553** (previous best 0.984515, +0.00102). The reverse-name route is the
   largest single LB gain since the cross-encoder; the LB gain exceeds the val gain (+0.00057).
+
+## France generator rules (Kavya's label-free finding, 27 Sep)
+- France true matches change the house number ~1% (US 12%, India 24%); French noise suffixes (fils, groupe,
+  developpement, associes) were systematically rejected (train word odds call them decoys, -4 to -7).
+- **LB: `nr_fr87_kv_HN_A` = 0.986665** (+0.00114 over 0.98553): +25,063 suffix pairs with the house number kept,
+  -3,943 claimed pairs with a changed number and blend < 0.998 (faithful port of her `sh-hn` kernel).
+- After the fix France has 3.21 predicted matches per S1 vs US 3.38 / India 3.35 (generator is country-invariant):
+  ~42k matches still missing. The largest unclaimed class keeps the house number 89-99% (like matches) with
+  organisation words (club, comite, amicale, ecole, union...); in labelled US/India val, organisation words added at
+  the same number are matches ~100% (association, society, council, federation...), pure decoy words
+  (enterprises, trading, ventures) are 0% even with the number kept.
+- Probes: `kv_HN_A_C1` (+23,829 pairs, 46 organisation words, France -> 3.30/S1), `kv_HN_A_C2france` (+5,424 '+france').
+- **LB: `kv_HN_A_C1` = 0.983453** (-0.0032): the organisation-word adds are decoys in France (category swap at the
+  same number). Removing the 1,319 already-claimed category-swap pairs is the consistent follow-up (`kv_D`,
+  est. +0.00015, not submitted).
+
+## France-supervised cross-encoder (AWS `ml.g5.2xlarge`, e5-large, US/India + LB-confirmed France classes)
+- Trained on 693,557 pairs; France pseudo-val = 25,144 LB-confirmed suffix matches + 24,288 category-swap decoys,
+  with the words groupe / club / ecole / amicale held out.
+- AUC on training words 1.000, on **held-out words 0.069** (inverted, like the self-trained French CE 0.059);
+  US/India val band 0.9481 vs e5-base round 3 0.9526. It only memorises the word lists the rules already
+  apply. Rejected.
+
+## France noise profile (edit signatures, label-free)
+- 35 noise ops (legal form kept/dropped/added/swapped, name typo/abbreviation/drop/add/reorder, case, junk,
+  empty address, house number, street words, address components) on 380k US/India val pairs and 932k France
+  candidates; France confident rate bias-corrected by the US/India confident/true ratio.
+- Apparent France differences (name typos 1.1% vs 5.6%, empty address 0.3% vs 4%) are the model's own bias:
+  the claimed-band France typo pairs are plain OCR-noise matches ("Loisrs", "Shotkan"). Legal-form swap (0.09%
+  vs 1.7-19%) touches only ~380 claimed-band pairs. No new rule.
+- Empty-address records whose name equals 2+ S1 names are true matches 98.5% in train but claimed ~0% in test
+  (every country): chains with orphan copies (test has 5.76 records per S1 vs 4.67 in train), undecidable;
+  matches per S1 per source are spread (1+1 12%, 1+2 11%, 2+1 10%...), so counts cannot disambiguate.
+
+## Synthetic French cross-encoder (AWS `ml.g5.2xlarge`, e5-base round 3 continued)
+- 560k pairs: 300k US/India + 260k France (80k real confident matches, 60k suffix adds with the number kept,
+  50k category swaps, 20k decoy words +/- number shift, 20k number shifts, 30k real low-score pairs). Words never
+  added in training: groupe, associes, club, ecole, amicale, comite, amis, sportive.
+- France pseudo-val: trained words AUC 1.000; held-out: associes accepted 72.5% (AUC 0.954 vs the held-out
+  category swaps), held-out category swaps rejected (<=9%), **groupe rejected (1.3%)** (read as the trained decoy
+  word "groupement"); held-out AUC overall 0.516. US/India val band AUC 0.9509 (base3 0.9527); blend with base3
+  0.98999 vs 0.98996 (noise).
+- As the France CE instead of the French CE: +12,325 / -10,830 France pairs; the adds are the suffix adds the rules
+  already make, the removals are 5,507 empty-address pairs (a bias from the real low-score negatives; empty-address
+  records are true matches 97.7% in train), 3,005 word swaps (category swaps = kv_D, plus unverified decoy-word
+  assumptions) and 1,694 changed numbers (= HN_A). Nothing validated beyond the rules. Rejected.
+
+## Qwen LoRA runs, 27 Sep
+- Colab A100 run #2 (new-route bands, lr 1e-4, bs 16, resumed from the 313k-pair adapter) **diverged** at step
+  ~34,600 (01:15 UTC, ~550k pairs): loss 0.07 -> 0.56 (constant prediction) and stayed there; the 10-minute syncs
+  overwrote the last good checkpoint. Stopped (42 compute units left) to keep the A100 for scoring.
+- AWS `ml.g5.12xlarge` run g5b (old-route bands, lr 1e-4, 4 x bs 6) is healthy (loss 0.02-0.03 at step 30,800);
+  training cap 08:30 UTC, then it scores the old-route val band + test cut; new-route pairs need a rescore with its adapter.
+
+## Final build (`scripts/final_build.py`)
+- Reproduces `nr_cebase3_frce_fr87` (0.98553) and `kv_HN_A` (0.986665) / `kv_D` exactly (0 pair differences).
+- Top-5 + top-10 route average (mean p over the runs that scored a pair), e5-base round-3 CE on the union band:
+  clean val (94,368 S1) 0.98994 -> **0.99007** at the leaderboard thresholds (0.75: 0.98996 -> 0.99010).
+- Candidate `avg_D` (+ French CE for 31,857 new France band pairs, A2 + HN_A + D): validator PASS, 11,322 S1
+  differ from `kv_HN_A`, 4.41 candidates per S1 (was 4.26).
+- e5-base round 4 (Kaggle P100, new-route bands): `base4` (base3 + ce4 data) val-band AUC 0.9542, `base4b`
+  (base3b + ce3 data) 0.9550 (base3 0.9527). Clean val at 0.8, route average: base3 0.99011, base4 0.99018,
+  **base3 + base4 + base4b (equal logit average) 0.99019** (top-5 route + base3 = 0.98998, i.e. +0.00021).
+- Candidate `avg_ce4_D` (route average + 3-CE ensemble + French CE + A2/HN_A/D): validator PASS; vs `kv_HN_A`
+  12,600 S1 differ; vs `avg_D` only US/India change (3,181 S1).
+
+## France empty-address records (rule E, 27 Sep)
+- Records without an address whose name clearly points to one S1 (token-sort margin >= 15 over the 2nd candidate):
+  claimed 84-97% in US/India but 55-94% in France. Unclaimed France ones with the same core words have stage-2 p
+  median 0.973 (75% >= 0.87); the French CE pulls them under the threshold. A2 never covers them (it needs a
+  house number).
+- Rule E (France only): unclaimed empty-address record, clear best S1, same core words and stage-2 p >= 0.87, or a
+  French noise suffix added (nd <= 1, na = 1). Adds 1,342 + 498 pairs (sampled pairs all look like matches).
+  Candidate `avg_ce4_DE`. Expected about +0.0001 (not LB-tested).
+- Synthetic CE v2 (`yoddhas-ce-syn2-fr-0927-0433`): all words, decoy words only with a number shift, no
+  Compagnie, +40k empty-address matches and +20k empty-address category swaps, real low-score negatives only with
+  an address.
+- Synthetic CE v2 as the France CE (with rules A2/HN_A/D/E after): +14,612 empty-address France pairs (France would
+  claim ~81% of its empty-address records vs 59% in the US: over-claiming chains/orphans), -2,113 multi-word
+  changes; US/India val band AUC 0.9517 (base3 0.9527). Rejected.
+- Kavya's synthetic CE (`kavyachetwani/syn-fr-scores`, 341k of our 480k France CE pairs) as the France CE: +3,760 /
+  -7,606 France pairs; removes clear matches (1,543 same-core pairs such as "Pharmacie Sainte" / "Pharmacie
+  Sainte SCI" at the same address, 1,067 OCR-typo pairs) and ~1,400 more changed-number pairs than HN_A; its own
+  US/India val is 0.98862 vs 0.98942. Rejected.
+
+## Label-free France census (27 Sep morning)
+- Candidate coverage per S1: France 3.91 records vs US 3.84 / India 3.73 (no blocking gap).
+- Unclaimed in-candidate records per S1: France 0.70 vs US 0.54; the excess is category swaps (+0.098),
+  "+france" (+0.025) and different names (+0.048): known decoy classes, not missed matches.
+- 5,672 unclaimed France records with the same core name and number are generic "City + Category" names on a
+  different street (different businesses); claimed France same-name pairs almost all share the street.
+- The current blend's val and test band densities now match for US/India (ratio ~1.0 in every band >= 0.7),
+  so US/India likely score their val (~0.990) on the LB and the gap is France.
+- Generator "rename" op: 1.6% of US/India true matches get an invented single-token name at the same address.
+  France has the same rate of invented-name + same-number candidates (0.077 per S1, US 0.077) but claims 71%
+  of those records vs 91% (US). Rule "add unclaimed invented-name, same number, same street" is only 19% precise
+  on US/India val (the generator also makes invented-name decoys at the same address): val -0.00215. Not used.
+- Twin test (is a record with added word w accompanied by another record with the same w on the same S1?):
+  France category decoys 0.2%, suffix matches 3.4%, '+france' 3.8% - but on US/India val labels the signal does not
+  hold (decoy word "enterprises": 2% matches, 36% twins; corr(match rate, twin rate) over words -0.30). Not used.
+- French vocabulary the normaliser mishandles (legal form "EI" not in LEGAL, "Ste" -> suite, "Dr" -> drive): rare
+  (EI in 1.6% of France S1 names, Sainte/Docteur ~0.5% of addresses) and their S1s have the usual claims per S1
+  (EI 3.26, Docteur 3.19, Sainte 3.19 vs 3.21 overall). No recall gap; not worth a pipeline rerun.
+- "+country" word, with labels: among 3,059,843 India true matches, the record NEVER adds "india" to its S1's
+  core name (0). 'S1 name + india' records do exist (35k), and the matched ones belong to a different S1 whose name
+  already contains India. So the generator's match noise never adds the country word: France '+france' records
+  (6,302 same-number single adds) are not matches of the S1 without "France"; the model rejects them (0.9%
+  claimed) and D drops the claimed ones. Settled; no change.
