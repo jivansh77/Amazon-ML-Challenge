@@ -664,3 +664,17 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   already make, the removals are 5,507 empty-address pairs (a bias from the real low-score negatives; empty-address
   records are true matches 97.7% in train), 3,005 word swaps (category swaps = kv_D, plus unverified decoy-word
   assumptions) and 1,694 changed numbers (= HN_A). Nothing validated beyond the rules. Rejected.
+
+## Qwen LoRA runs, 27 Sep
+- Colab A100 run #2 (new-route bands, lr 1e-4, bs 16, resumed from the 313k-pair adapter) **diverged** at step
+  ~34,600 (01:15 UTC, ~550k pairs): loss 0.07 -> 0.56 (constant prediction) and stayed there; the 10-minute syncs
+  overwrote the last good checkpoint. Stopped (42 compute units left) to keep the A100 for scoring.
+- AWS `ml.g5.12xlarge` run g5b (old-route bands, lr 1e-4, 4 x bs 6) is healthy (loss 0.02-0.03 at step 30,800);
+  training cap 08:30 UTC, then it scores the old-route val band + test cut; new-route pairs need a rescore with its adapter.
+
+## Final build (`scripts/final_build.py`)
+- Reproduces `nr_cebase3_frce_fr87` (0.98553) and `kv_HN_A` (0.986665) / `kv_D` exactly (0 pair differences).
+- Top-5 + top-10 route average (mean p over the runs that scored a pair), e5-base round-3 CE on the union band:
+  clean val (94,368 S1) 0.98994 -> **0.99007** at the leaderboard thresholds (0.75: 0.98996 -> 0.99010).
+- Candidate `avg_D` (+ French CE for 31,857 new France band pairs, A2 + HN_A + D): validator PASS, 11,322 S1
+  differ from `kv_HN_A`, 4.41 candidates per S1 (was 4.26).
