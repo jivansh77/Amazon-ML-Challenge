@@ -850,3 +850,11 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   +0.00002) and 1,296 Latin-script records. The family adds are pairs the submitted blend scored and rejected (US: 548 with
   blend 0.2-0.5, 145 with 0.05-0.2); the stronger blend already claims half of what family completion adds on the proxy (test
   0.24% of S1 vs val 0.45%), and rejected in-candidate pairs are the least precise class on our val. Not merged.
+- **Kavya's final_merge_v2** (v1 + R6: same-name compact key with a shared house number or city word, 6,818 adds, 99.5%
+  India; her val 284 adds at 88.7%, +0.00017 on the proxy): 2,966 R6 pairs are identical to v4's native adds; 2,230 native
+  records v4 leaves unclaimed (native classifier agrees on the S1 for 1,021 with median q 0.65, prefers another S1 for 1,209)
+  and 1,611 Latin-script records (generic Indian names whose record carries the S1's unit number under the "Block X / Door No"
+  noise, websites). From the two validations (her R3+R6: 603 val adds at ~93%; native route: 346 at 97.7%) her extra adds are
+  roughly 87% precise, about +0.0001 LB; not validated on our blend.
+- **`avg_ce4_v6_kv`** = v4 + her 7,156 R3/R6 adds on records v4 leaves unclaimed (outside the candidate lists; family
+  completion not included). **`avg_ce4_v7_kv_fr`** = v6 + the v5 France bundle. Both validator PASS.
