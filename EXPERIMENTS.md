@@ -872,3 +872,19 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   keeps one S1 per record across route files (earlier files win).
 - **`avg_ce4_v9s_safe`** = v6 + Qwen + tie-breaker (val-positive only); **`avg_ce4_v9_all`** = v9s + family completion +
   France bundle. Both validator PASS, no record on two S1.
+- **Val bias found (hidden owners).** In the val set, a record owned by a non-val S1 looks unclaimed (its owner is not scored),
+  so any rule that adds unclaimed records is charged with false positives that cannot happen on test, where the owner is
+  present. Rule K (Kavya: best unclaimed candidate in [0.55, 0.8) for S1 with k <= 2, match profile) on US/India val: raw 750
+  adds at 58% (-0.00057); with non-val-owned records removed 466 at 94% (+0.00054); without empty-address records only 74-81
+  adds at 82-89% (+0.00004-0.00006). The empty-address part is an artifact of the correction (same-name ties: the owner does
+  not reliably win), so Rule K is small for US/India. Global US/India threshold on corrected val: address records 0.8 -> 0.5-0.7
+  +0.00014-0.00028 (keep 0-10% of non-val-owned records), empty-address records +0.0011-0.0014 (artifact). Not applied.
+- **France invented-name records (the France blocking gap).** Full train labels: a single-token record with no name overlap at
+  the same house number + street key as exactly ONE S1 is that S1's match 94.2% (US) / 94.9% (India); the non-matches are
+  street-key collisions across different cities (exact address: 99.9%). Test claim rate of that class: US 94.2%, India 92.7%
+  (= base rate; their leftovers are the cross-city collisions: val precision of unclaimed ones 32%), **France 59.7%**. Of the
+  5,198 unclaimed France records, 5,135 are in the same city and only 507 were ever candidates (blend median 0.77 < 0.87);
+  4,691 were never proposed by blocking. Same invented-name vocabulary as US/India (Onyxwex, ZEPHBRIXUMBRA...). Added as a
+  France rule (5,135 pairs on ~5,020 S1; 1,750 of those S1 had k <= 2). Expected about +0.0002-0.00025.
+- **`avg_ce4_v10s`** = v6 + Qwen + tie-breaker + France invented-name adds; **`avg_ce4_v10fr`** = v10s + France bundle. No family
+  completion in either (357 of its pairs are claimed by the Qwen-augmented decoder itself). Both validator PASS.
