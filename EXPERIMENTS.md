@@ -726,3 +726,5 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   already contains India. So the generator's match noise never adds the country word: France '+france' records
   (6,302 same-number single adds) are not matches of the S1 without "France"; the model rejects them (0.9%
   claimed) and D drops the claimed ones. Settled; no change.
+- e5-large round 2 (AWS g6.4xlarge): val-band AUC 0.9483 (base4 0.9542); adding it to the base3/base4/base4b
+  ensemble: clean val 0.99019 -> 0.99021-0.99022 at 0.8 (noise). Not used.
