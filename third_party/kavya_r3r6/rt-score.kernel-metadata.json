@@ -1,0 +1,32 @@
+{
+  "id": "kavyachetwani/rt-score",
+  "id_no": 136086072,
+  "title": "rt-score",
+  "code_file": "rt-score.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [
+    "gpu"
+  ],
+  "dataset_sources": [
+    "jvmusic/ber-ce-data",
+    "jvmusic/ber-ce-data2",
+    "jvmusic/ber-france-v2",
+    "jvmusic/ml-challenge"
+  ],
+  "kernel_sources": [
+    "jvmusic/ber-block-train",
+    "jvmusic/ber-block-test",
+    "jvmusic/ber-dec-train",
+    "jvmusic/ber-ce-base2",
+    "kavyachetwani/rt-miss"
+  ],
+  "competition_sources": [],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+  "machine_shape": "NvidiaTeslaT4"
+}

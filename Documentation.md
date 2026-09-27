@@ -246,7 +246,46 @@ Text normalisation before blocking and matching:
 
 ---
 
-## 6. Conclusion
+
+## 6. Final submission (`avg_ce4_v17`)
+
+The submitted file builds on the pipeline above with four additions. Public LB history: `dec_cebase` 0.982855 → reverse-name
+route 0.98553 → France generator rules 0.98809 → native-script and R3/R6 routes 0.989052 → France invented-name rule 0.989412
+(last measured). v11-v17 add label-validated France rules and tie-breaks on top (not LB-measured; estimate ~0.9899).
+
+**6.1 Reverse-name route and run average.** 64% of the validation misses that were never candidates are address-less records.
+A `namerev` stage adds, for every S2/S3 record without an address, its top-k S1 by character-3-gram TF-IDF on the name. Blocking
+recall rises from 0.9849 to 0.9888. Two full runs (top-5 and top-10) are averaged pair by pair.
+
+**6.2 Cross-encoder ensemble.** The uncertain band is scored by three multilingual-e5-base rounds (base3, base4, base4b) and a
+Qwen2.5-7B-Instruct LoRA pair classifier (Apache-2.0, 7.6B parameters). Their logits are averaged and blended with the XGBoost
+logit (weight 0.6). France uses the French-adapted e5-small cross-encoder instead. Thresholds: US/India 0.8 (validation optimum),
+France 0.87 (leaderboard probes 0.97 → 0.93 → 0.90 → 0.87).
+
+**6.3 France generator rules (label-free).** France has no labels. We read the generator's operations off the test data and
+checked every rule against the same structural class in US/India labels:
+- **Suffix operation = match.** One S1 word is dropped and a French suffix is appended after the legal form (Fils, Groupe,
+  Développement, Associés, France, Services, Cie). Rules A2P / A2F / A2N / E2 / OOC.
+- **Decoys, dropped.** In-place category swaps (Club → Comité, 164-word vocabulary; rule DP). Changed house numbers with an added
+  or swapped qualifier and a small upward shift (HN_A; the kept-qualifier profile is re-added by HNK).
+- **Name-replaced copies with the address kept.** An invented single-token name or the S1's acronym. Train precision 94-100%;
+  France's blocking missed most of them. Placed when the address (house number + street + city) identifies one S1 (per city,
+  typo'd street, shared address with one matching acronym, or a matching unit / sub-number such as "bis", "ter", "B").
+**6.4 Extra routes and tie-breaks (records the decode leaves unclaimed).**
+- India native-script route: transliterate, then name + address TF-IDF and a classifier; 97.7% precise on validation.
+- Kavya's R3 phonetic route (Double Metaphone + house number) and R6 same-name compact-key route, each scored by the e5-base
+  cross-encoder + XGBoost (her Kaggle kernels are in `src/kavya_r3r6/`).
+- First match for S1s still empty (US/India, blend ≥ 0.5; skips address-less same-name ties).
+- **Legal-form tie-break.** For an address-less record whose name belongs to 2+ S1s, the one S1 carrying the record's legal
+  form. Train precision 95-97% / 90-91% / 84% with 0 / 1 / 2 same-name S1s without a legal form. France copies never swap the
+  legal form, so there the one twin without a form also takes a record whose form no twin has.
+
+**6.5 What limits the score.** For US/India, test claims per 1,000 S1 match train's true matches per 1,000 S1 within ±2 in every
+name × address class that has an address. The remaining gap is address-less records whose name belongs to several S1s
+(≈ 60 per 1,000 S1). On train we checked row order, IDs, the source split, sibling-name similarity and full-name identity; all
+are at chance, and only the legal form separates the owners.
+
+## 7. Conclusion
 
 Entity resolution at this scale is won in the tails. Candidates are cheap to retrieve: two routes reach 98.5% recall with 4.2 pairs per S1. The hard part is telling a business from its generated branches, especially in a language without labels. Modelling the decoy signature, adding a cross-encoder for the uncertain band, and correcting thresholds for the test population's decoy density each gave measurable gains. Validation scores must be read with the test prior shift in mind.
 
@@ -271,8 +310,17 @@ Entity resolution at this scale is won in the tails. Candidates are cheap to ret
 | `src/ce_data.py`, `src/ce_train.py` | cross-encoder data, training and scoring |
 | `src/fit_pseudo_odds.py` | French decoy words from confident test predictions |
 | `src/blend.py` | model × cross-encoder blend, per-country thresholds, writes both output files |
+| `src/llm_ce.py`, `src/sagemaker_llm.py` | Qwen2.5-7B LoRA pair classifier (training / scoring) |
+| `src/sagemaker_pipeline.py` | the AWS run of the full pipeline with the reverse-name route |
+| `src/final_build.py` | final decode: run average, CE ensemble, French CE, thresholds, France rules, route files, first match |
+| `src/native_route.py` | India native-script route |
+| `src/france_name_replaced.py`, `src/france_thr_safe.py`, `src/france_shared_addr.py` | France name-replaced / threshold-safe / shared-address rules |
+| `src/legal_tie.py` | legal-form tie-break for address-less same-name ties |
+| `src/append_routes.py` | appends the v16 / v17 route files to the decoded build |
+| `src/kavya_r3r6/` | R3 phonetic and R6 same-name routes (Kaggle kernels) and the original France house-number kernel |
+| `src/artifacts/routes/` | every route / rule pair file used by the submitted build |
 
-The exact commands are in `README.md`: normalise + block, then dense retrieval, train, test, cross-encoder, French words + re-score, then blend.
+The exact commands are in `README.md`: normalise + block, dense retrieval, train (with the reverse-name route), test, cross-encoders, French words + re-score, then `final_build.py` and `append_routes.py` for the submitted file (section "Final build").
 
 ### B. Additional Results
 

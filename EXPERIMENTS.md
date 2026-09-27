@@ -1085,3 +1085,11 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
 - **`avg_ce4_v17b`** (recommended) = v16 + `artifacts/v17/legal_tie_adds_v17b.parquet`: v17's adds without India (52) and without
   the France adds whose stage-2 p < 0.5 (57; the model clearly rejected them, most France adds have p 0.84-0.97 and were pulled
   under the threshold by the French CE only). 714 pairs (France 625, US 89), 5,839,918 matches, validator PASS.
+- **v17c** (not uploaded; `artifacts/v17/legal_tie_adds_v17c.parquet`): the tie-break gated on stage-2 p >= 0.5 in every country.
+  On val the US rejected-subset precision is 88.2% (51) with p >= 0.5 vs 33% (6) below. France 618, India 38, US 79; about
+  +0.000005 over v17, so **v17 is the final** (the zip's `output/` holds v17).
+- **Final package** `Yoddhas_submission.zip` (`scripts/make_code_zip.py ... --output <v17 dir> --doc Documentation.md`): the code
+  folder now carries `final_build.py`, every route/rule script, `append_routes.py`, all route pair files, and Kavya's R3/R6 Kaggle
+  kernels (`third_party/kavya_r3r6/`: rt-miss, rt-score, rt-build, rt-miss2-tr, rt-miss2-te, rt-score2, plus sh-hn; they use the
+  internet only to pip-install metaphone / sparse_dot_topn / rapidfuzz, inputs are the challenge data and our own runs).
+  `append_routes.py` on the v15b build reproduces the v17 matching file byte-for-byte (candidate file: same 7,670,616 pairs).

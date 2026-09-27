@@ -1,0 +1,26 @@
+{
+  "id": "kavyachetwani/sh-hn",
+  "id_no": 136022947,
+  "title": "sh-hn",
+  "code_file": "sh-hn.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": [],
+  "dataset_sources": [
+    "jvmusic/ber-probes",
+    "jvmusic/ml-challenge"
+  ],
+  "kernel_sources": [
+    "jvmusic/ber-ce-fr-train",
+    "jvmusic/ber-dec-test3",
+    "jvmusic/ber-ce-base2"
+  ],
+  "competition_sources": [],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-images/python@sha256:dafd4ce5668bbf1ad422e4c109e0f18c9623c3a7c7f48b0235f13142755c40b9",
+  "machine_shape": "None"
+}

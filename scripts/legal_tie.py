@@ -19,7 +19,7 @@ from ber.io import find_dataset_dir, read_source
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True); ap.add_argument("--claimed", required=True); ap.add_argument("--out", required=True)
 ap.add_argument("--max_n0", default="France=2,US=1,India=1")
-ap.add_argument("--case_b", default="France", help="countries where a record whose legal form no same-name S1 has goes to the one S1 without a legal form (legal form added by the noise); France only: US 80% / India 39% in train, where copies swap legal forms")
+ap.add_argument("--case_b", default="France", help="countries where a record whose legal form no same-name S1 has goes to the one S1 without a legal form (legal form added by the noise); France only: US 80%% / India 39%% in train, where copies swap legal forms")
 a = ap.parse_args()
 dd = find_dataset_dir(a.data)
 STOP = ["inc", "llc", "ltd", "corp", "corporation", "co", "company", "pvt", "private", "limited", "llp", "lp", "pc", "pa", "plc", "pllc",
