@@ -858,3 +858,9 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   roughly 87% precise, about +0.0001 LB; not validated on our blend.
 - **`avg_ce4_v6_kv`** = v4 + her 7,156 R3/R6 adds on records v4 leaves unclaimed (outside the candidate lists; family
   completion not included). **`avg_ce4_v7_kv_fr`** = v6 + the v5 France bundle. Both validator PASS.
+- **LB: `avg_ce4_v6_kv` = 0.989052** (v2h 0.98809, +0.00096; expected ~+0.0006: v3 France ~+0.0001, native route ~+0.0004 by
+  val, R3/R6 extras ~+0.0001). The India out-of-candidate routes transfer at least as well as validation suggests.
+- India in-candidate misses on val (355) are mostly invented names at the S1's address and small number changes (203 -> 204,
+  B-81 -> B-83); addresses with a prepended "Block / Door No / Plot" number are only 100 of them. No rule.
+- **`avg_ce4_v8_kv_fam_fr`** = v6 + Kavya's family-completion adds (3,559 on records unclaimed in v6) + the France bundle
+  (+2,135 France). Probe for the last two submissions; validator PASS.
