@@ -726,3 +726,51 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   already contains India. So the generator's match noise never adds the country word: France '+france' records
   (6,302 same-number single adds) are not matches of the S1 without "France"; the model rejects them (0.9%
   claimed) and D drops the claimed ones. Settled; no change.
+
+## France suffix operation, position signature and number perturbation (27 Sep, v2 rules)
+- **The suffix operation.** In US/India labels, "drop one S1 word + add Center/Services/Service/Partners" at the same house
+  number is 97-99% true matches, and the added word is appended AFTER the legal form ("Great Indo Infra Pvt Ltd" -> "Great Indo
+  Pvt Ltd Services"; 88-92% after the legal form, the rest reordered). The same operation exists in France with a French list:
+  fils, groupe, associes, developpement (the A2 words) and also **france, services, cie**. Position of the added word among
+  France same-number one-word swaps (share after the legal form): fils 0.995, associes 0.996, developpement 0.89, france 0.88,
+  groupe 0.84, services 0.84, cie 0.79; when before the legal form, these words sit at the very front ("France Mamzelles SAS";
+  france 99.6%, developpement 100%). Category swaps are **in place** (club/comite/amicale/ecole 0.13-0.16 after, ~1% front) -
+  and so are **centre, compagnie, service, federation** (0.10-0.15), which the model claims at 39-84% because Center/Service
+  are match words in the US. "+france" swaps: 4,846 same-number pairs (like groupe 4,317, associes 4,090), same dropped-word
+  profile as the A2 words, "France" essentially never in the middle (19 of 6.3k); the old India argument does not apply (no
+  "+india" record exists in train at all, and the US/India suffix list is Center/Services/Service/Partners).
+- **Out-of-candidate suffix records.** 7.4k France records with the suffix operation (same number + street + city as exactly
+  one S1) are in NO candidate list: the stage-1 filter drops them because the model reads the French suffixes as decoy words,
+  so A2 could never reach them.
+- **Number perturbation vs decoy shift.** US/India labels, same core name + same street + changed first number: with the legal
+  form added or swapped it is a decoy (US 11-28% match: "Patel Seafood" -> "Patel Seafood Co | 120 -> 129"), with the legal
+  form kept/dropped/absent it is a match (US 97%, India 98%). Decoys shift the number UP by 1-20 (US 85%); matches have a
+  smaller number (79%) or >100. A record number of "1" is a match 97.7-100%. France follows the same decoy profile (33k
+  legal-changed pairs: 90% shifted up by 1-20, claimed 0%), and an extra "France" (S1 already "(France)") behaves like a legal
+  qualifier ("In Fetes (France) SARL | 10" -> "In Fetes (France) France SARL | 11"). HN_A (LB-tested only together with A2)
+  dropped ~1.7k keep-qualifier pairs with the match profile; the kept-qualifier + (smaller or >100) class is HNK.
+- A second France decoy operation: category -> Centre/Compagnie/Federation/Service with a shifted number ("Crapahute Club SAS |
+  4" -> "Crapahute Compagnie SAS | 7"), like India's "South Consultants | 6" -> "South Partnership | 8".
+- Checked, no rule: legal-form swaps with same name and number (2,848; 2,698 on a different street), misattribution between
+  same-name S1s (0), unclaimed same-core same-number records (97% on a different street), empty-address records (12.7k of the
+  19.6k unclaimed tie between 2+ same-name S1s), the 0.80-0.87 France band after DP (mixed: empty-address, invented names,
+  swaps, acronyms).
+- Matches per S1 (train truth, identical for US and India): mean 3.46, P(1) 5.4%, P(2) 17.0%. Test predictions: US 3.38,
+  France 3.21 (kv_HN_A) -> 3.25 (v2); France's excess of k=1/k=2 S1s is the recall gap the v2 adds target.
+
+**v2 rules in `scripts/final_build.py`** (France only; A2/HN_A/D/E unchanged, the LB file reproduces with 0 pair differences):
+- A2F: +France/Services/Cie suffix adds (unclaimed record, best S1 by name + address, same number, appended/front/last).
+- DP: drop claimed in-place category swaps over the derived French category vocabulary (dropped-word count >= 40, 164 words),
+  not suffix words, not abbreviations/typos; replaces D (D also dropped the "+france" suffix records).
+- E2: E with the v2 suffix words. OOC: out-of-candidate suffix records, added to the candidate file too (legal form not
+  swapped, all address numbers equal, same city, unique S1). HNK: see above.
+
+| Build (avg_ce4 = top-5 + top-10 route average, CE base3 + base4 + base4b, French CE incl. 31,857 new band pairs) | France pairs | vs kv_HN_A |
+|---|---|---|
+| avg_ce4_DE (previous candidate: A2, HN_A, D, E) | 832,962 | France +3,171 / -2,728 |
+| **avg_ce4_v2** (A2 25,833, A2F 5,764, HN_A -4,016, DP -2,559, E2 2,096, OOC 6,760) | 844,442 | France +15,873 / -3,950 |
+| **avg_ce4_v2h** (+ HNK 2,853: 652 number->1, 1,158 >+100, 1,043 smaller) | 847,295 | |
+
+US/India are identical in all three (avg_ce4: all-val F0.5 0.98997 -> 0.99010). Validator PASS with --check-ids. Files in
+Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +0.0003, OOC +0.00025, E2 +0.0001, HNK
++0.0002, avg_ce4 US/India +0.0002.
