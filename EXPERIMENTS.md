@@ -1053,3 +1053,43 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
     differs; same-city cases are rare in US/India. Removing ~150 would be worth ~+0.00001; not done.
   - Records at shared France addresses with exactly one same-name tenant: 99.999% claimed. Tail of k: train truth never exceeds
     11 matches per S1, and neither does any test prediction.
+
+## Density audit against train truth; legal-form tie-break; v17 (27 Sep, 16:15-17:20 UTC)
+- **Per-class density check (label-free test audit).** True matches per S1 of any structural class should be the same in train
+  and test (same generator, random S1). For US/India, claimed pairs per 1,000 S1 in test vs true pairs per 1,000 S1 in train,
+  by name relation (same core / subset / overlap / disjoint) x address relation (empty / no number / number+street / number only /
+  street only / neither): every class with an address agrees within +-2 per 1,000 (e.g. US same core + number + street 860.9 vs
+  861.6; changed-number classes by direction and legal-form change also agree, e.g. US lower number + legal form kept 24.5 vs
+  24.2). The whole US/India shortfall is address-less records: US -64 per 1,000 (same core -31, overlap -26, subset -7), India -58.
+  Precision cannot be read off the densities, but the recall side of US/India is at the tie ceiling.
+- **Address-less records with no exact-name S1** (typos): train owner has a unique name only ~50% of the time (US 39.7k of 78.5k,
+  India 22k of 46k); the model claims ~48% of them in test, i.e. the resolvable part.
+- **Other tie signals checked on train, all coin flips:** file row order (Spearman 0.001, rows shuffled), per-S1 source split
+  (n2/n3 spread 1-4), name similarity to the twin's other copies in the same source (48% / 53%), full-name identity (74% US).
+- **Test decoys come in clusters.** Groups of 2+ unclaimed records with the same core name + number + street: US 38.8 per 1,000
+  S1 in test vs 1.4 unmatched in train, France 20.9 (decoy "branches" with several copies; legal form changed, number shifted).
+  Claimed records whose branch twin is unclaimed at a changed number: US 995, India 713, France 394; not removed (in train 55% of
+  changed-number true matches share their number with a sibling, mostly in the same source).
+- **Legal-form tie-break.** Address-less record carrying a legal form, core name shared by 2+ S1s, exactly one of them with that
+  legal form (canonicalised). Train precision by the number of same-name S1s without any legal form (n0): n0 = 0 95.1% (US 3,810)
+  / 96.7% (India 365); n0 = 1 90.3% / 91.0%; n0 = 2 83.9% / 83.5%; n0 >= 3 56-61%. France copies never swap the legal form
+  (claimed same-name pairs: swapped 0.02%, US 2.6%; only 150 same-address swapped records), so France uses n0 <= 2 and also
+  case B (the record's form is on none of the twins, exactly one twin has no form; US 80% / India 39% in train because they swap).
+  Test adds on records unclaimed in v16: France 483 (A) + 199 (B), US 89, India 52 = 823 (US/India already claim most of these).
+- **`avg_ce4_v17`** = v16 + `artifacts/v17/legal_tie_adds.parquet` (`scripts/legal_tie.py`): 5,840,027 matches, validator PASS
+  with --check-ids. Expected about +0.00002-0.00003 over v16.
+- **Rejected-subset check (val, 17:25 UTC).** The tie-break adds only records the model left unclaimed, so its all-records train
+  precision overstates it. On val, among Case A records the decoder did not claim: US n0 = 0 81.8% (11), n0 = 1 82.6% (46),
+  n0 = 2 72.7% (33); India 50% (2) / 37.5% (8). The model's claimed acronym-letter-insertion pairs are 97.9% right on val (its
+  picks inside that class are informed), so France's are not dropped.
+- **`avg_ce4_v17b`** (recommended) = v16 + `artifacts/v17/legal_tie_adds_v17b.parquet`: v17's adds without India (52) and without
+  the France adds whose stage-2 p < 0.5 (57; the model clearly rejected them, most France adds have p 0.84-0.97 and were pulled
+  under the threshold by the French CE only). 714 pairs (France 625, US 89), 5,839,918 matches, validator PASS.
+- **v17c** (not uploaded; `artifacts/v17/legal_tie_adds_v17c.parquet`): the tie-break gated on stage-2 p >= 0.5 in every country.
+  On val the US rejected-subset precision is 88.2% (51) with p >= 0.5 vs 33% (6) below. France 618, India 38, US 79; about
+  +0.000005 over v17, so **v17 is the final** (the zip's `output/` holds v17).
+- **Final package** `Yoddhas_submission.zip` (`scripts/make_code_zip.py ... --output <v17 dir> --doc Documentation.md`): the code
+  folder now carries `final_build.py`, every route/rule script, `append_routes.py`, all route pair files, and Kavya's R3/R6 Kaggle
+  kernels (`third_party/kavya_r3r6/`: rt-miss, rt-score, rt-build, rt-miss2-tr, rt-miss2-te, rt-score2, plus sh-hn; they use the
+  internet only to pip-install metaphone / sparse_dot_topn / rapidfuzz, inputs are the challenge data and our own runs).
+  `append_routes.py` on the v15b build reproduces the v17 matching file byte-for-byte (candidate file: same 7,670,616 pairs).

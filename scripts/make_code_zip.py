@@ -22,8 +22,12 @@ base = "code/business_entity_resolution"
 req = ["polars==1.35.2", "pyarrow==24.0.0", "numpy==2.0.2", "scipy==1.16.3", "scikit-learn==1.6.1", "lightgbm==4.6.0",
        "xgboost==3.2.0", "rapidfuzz==3.14.6", "sparse_dot_topn==1.2.0", "indic_transliteration==2.3.82",
        "torch==2.10.0  # CUDA build for the dense / XGBoost / cross-encoder steps", "transformers==5.0.0",
-       "sentence-transformers==5.4.1", "tokenizers==0.22.2"]
-SCRIPTS = ["run.py", "fit_translit.py", "ce_data.py", "ce_train.py", "fit_pseudo_odds.py", "blend.py"]
+       "sentence-transformers==5.4.1", "tokenizers==0.22.2",
+       "peft  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the R3 route (BSD)"]
+SCRIPTS = ["run.py", "fit_translit.py", "ce_data.py", "ce_train.py", "fit_pseudo_odds.py", "blend.py", "llm_ce.py",
+           "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "final_build.py", "france_name_replaced.py",
+           "france_thr_safe.py", "france_shared_addr.py", "legal_tie.py", "append_routes.py"]
+ROUTES = ["v11", "v13", "v14", "v15", "v16", "v17"]   # route / rule pair files used by the submitted build
 
 readme = """# Business Entity Resolution (team Yoddhas)
 
@@ -84,6 +88,51 @@ US/India use the validation optimum (0.8, which the estimate agrees with); Franc
 chosen with leaderboard probes (0.97 -> 0.93 improved it; lower bands fall below break-even precision).
 `candidate_pairs.tsv` is the exact set the stage-2 model (and the cross-encoder) score: the stage-1 filter's output.
 
+## Final build of the submitted file (`avg_ce4_v17`, the file in `output/`)
+The leaderboard file is decoded by `src/final_build.py` from two pipeline runs, a cross-encoder ensemble and route/rule pair
+files, then two route steps are appended with `src/append_routes.py`.
+
+1. **Two pipeline runs with the reverse-name route** for address-less records (`namerev` stage: top-5 and top-10 S1 per record by
+   name). `src/sagemaker_pipeline.py` holds the exact commands (AWS ml.g5.12xlarge):
+```
+python src/run.py --data <D> --work nr --stages norm,block --splits train,test --routes tok --tok_max_df 0.01 --indic src/artifacts/indic_dict.json
+python src/run.py --data <D> --work nr --stages dense --splits train,test --k_dense 30 --k_rev 5
+python src/run.py --data <D> --work nr --stages namerev,train --splits train,test --stage2 --global_sims --decoy_feats --model xgb \
+    --neg_rate 0.2 --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 --s2_topk 15 --s2_minp 0.005
+python src/run.py --data <D> --work nr --stages test --prior_thr
+python src/run.py --data <D> --work nr_fr --reuse nr --stages test --prior_thr --odds_extra src/artifacts/odds_extra_france_iso.parquet
+cp nr_fr/test_scores.parquet nr/fr_test_scores.parquet          # France is scored with the calibrated French decoy words
+# second run: the same with --k_namerev 10 into nr10/
+```
+2. **Cross-encoders** on the uncertain band (steps 5-6 above): multilingual-e5-base rounds 3, 4 and 4b (`ce_data.py` + `ce_train.py`),
+   a Qwen2.5-7B-Instruct LoRA pair classifier (`src/llm_ce.py`, Apache-2.0, 7.6B parameters; `src/sagemaker_llm.py` runs it on AWS),
+   and the French-adapted e5-small cross-encoder for France.
+3. **Route / rule pair files** (in `src/artifacts/routes/`; each adds pairs only for records the decode leaves unclaimed):
+   - `v11/native_adds_q90.parquet`: India native-script route, `src/native_route.py`.
+   - `v11/kv_r3r6_extras.parquet`: R3 phonetic route and R6 same-name compact-key route (Kavya's Kaggle kernels, `src/kavya_r3r6/`:
+     R3 = `rt-miss.py` -> `rt-score.py` -> `rt-build.py`, R6 = `rt-miss2-tr.py` + `rt-miss2-te.py` -> `rt-score2.py`; see
+     `src/kavya_r3r6/HANDOFF.md`). The pairs are her final_merge_v2 R3/R6 adds on records our v4 decode left unclaimed.
+   - France name-replaced copies (`src/france_name_replaced.py`, modes default / `--unique_by city` / `fuzzy_street` / `inv_legal` /
+     `acr_shared`), the France 0.85 safe subset (`src/france_thr_safe.py`), shared-address sub-number / acronym rules
+     (`src/france_shared_addr.py`) and the legal-form tie-break for address-less same-name ties (`src/legal_tie.py`).
+   - `src/kavya_r3r6/sh-hn.py` is Kavya's original France house-number kernel; its rules (A2 suffix adds, HN_A drops) are ported
+     into `final_build.py`.
+4. **Decode** (US/India thresholds 0.8, France 0.87; France generator rules; first match for empty US/India S1):
+```
+R=src/artifacts/routes
+python src/final_build.py --data <D> --runs nr,nr10 \
+  --ce nr/ce_test.parquet:1,nr10/cebase_ce_test.parquet:1,ce_base4/ce_test.parquet:1,ce_base4b/ce_test.parquet:1,qwen_ce_test.parquet:1 \
+  --ce_fr nr/ce_test_france.parquet,nr10/ce_test_france_new.parquet \
+  --rules A2P,A2F,A2N,HN_A,DP,E2,OOC,HNK --collapse_legal --first_min US=0.5,India=0.5 --first_skip_ea_ties \
+  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/kv_r3r6_extras.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \
+  --out v15b                                                   # 5,838,236 matches
+BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v15b v16 $R/v16/fr_unit_adds.parquet,$R/v16/fr_acr_city_shared_adds.parquet
+BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v16 v17 $R/v17/legal_tie_adds.parquet     # 5,840,027 matches = output/
+```
+The route files are regenerated by the scripts above from the decoded pairs of the previous step (commands in each script's
+docstring). Validator: `python3 utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv
+--test-dir dataset/test --check-ids` -> PASS.
+
 ## Source layout (src/)
 - `ber/normalize.py`, `ber/translit.py`: normalisation (accents, OCR digits, legal forms, street types EN/FR,
   house numbers) and the learned Indic->Latin dictionary
@@ -108,6 +157,14 @@ with zipfile.ZipFile(a.out, "w", zipfile.ZIP_DEFLATED) as z:
     for f in SCRIPTS:
         z.writestr(f"{base}/src/{f}", fix(open(f"{root}/scripts/{f}").read()))
     z.write(f"{root}/artifacts/indic_dict.json", f"{base}/src/artifacts/indic_dict.json")
+    for f in sorted(os.listdir(f"{root}/artifacts")):
+        if f.endswith(".parquet"):
+            z.write(f"{root}/artifacts/{f}", f"{base}/src/artifacts/{f}")
+    for v in ROUTES:
+        for f in sorted(os.listdir(f"{root}/artifacts/{v}")):
+            z.write(f"{root}/artifacts/{v}/{f}", f"{base}/src/artifacts/routes/{v}/{f}")
+    for f in sorted(os.listdir(f"{root}/third_party/kavya_r3r6")):
+        z.write(f"{root}/third_party/kavya_r3r6/{f}", f"{base}/src/kavya_r3r6/{f}")
     z.writestr(f"{base}/README.md", readme)
     z.writestr(f"{base}/requirements.txt", "\n".join(req) + "\n")
     if a.output:
