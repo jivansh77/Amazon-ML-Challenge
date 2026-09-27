@@ -945,3 +945,67 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   - `scripts/france_name_replaced.py` (`--unique_by city --drop_foreign_handles`, `--mode fuzzy_street`,
     `--mode inv_legal`) reproduces all four new route files exactly. `artifacts/v13/` has every route file and the build
     command.
+
+## Hidden-owner correction calibrated to test; first match for empty S1 (v14) (27 Sep, 14:20-14:55 UTC)
+- **Calibration.** The hidden-owner "corrected val" removes every record owned by a non-val S1. That assumes test has no such
+  unowned look-alikes. Checked directly: per 1,000 S1, count the records whose best score falls in a band. On val, split them
+  by owner (true match / unowned decoy / another val S1 / non-val S1 = "hidden"); on test, count them all. The share of hidden
+  records val must keep to match test's count is the calibrated keep share.
+  - True-match density agrees at the top: best score >= 0.99, address records: test 3,322 vs val true matches 3,314 (US) and
+    3,316 vs 3,311 (India).
+  - In the address bands 0.5-0.6 / 0.6-0.7 / 0.7-0.8, test has as many unowned records as the RAW val or more. Keep share:
+    US 0.36 / 0.76 / 1.06, India 0.17 / 0.28 / 1.31. Empty-address bands look like the corrected val (0-0.26, India 0.7-0.8
+    0.92), but there the correction hides same-name ties whose owner is present on test.
+  - Implied test precision of address records scored 0.5-0.8 is only 54-70% (corrected val said ~80%).
+- **Options re-scored** (val F0.5 deltas; raw / corrected / calibrated):
+  - address threshold 0.8 -> 0.7: -0.00005 / +0.00017 / -0.00005;
+  - address threshold 0.8 -> 0.6: -0.00038 / +0.00021 / -0.00020;
+  - Rule K on address records only (k <= 2): -0.00021 / +0.00006 / -0.00008 (61% precise);
+  - Not applied: their corrected-val gain came from the removed unowned records.
+- **First match for empty S1** (best candidate whose best S1 it is, blend >= t): t = 0.5 gives +0.000096 / +0.00038 / +0.000315
+  (calibrated: 63 adds, 48 right, 15 on true singletons). For an empty S1 a wrong add costs only when the S1 is a true
+  singleton, so the break-even is ~0.5, not ~0.73. Lower t is negative on raw val: t = 0.4 -0.00015, t = 0.3 -0.00078 (156 of
+  246 adds on true singletons). Applied at t = 0.5 for US/India only. France is left to the France empty-S1 audit, because the
+  France empty S1s with a high unclaimed score are mostly category swaps that DP dropped.
+- `--first_min` in `final_build.py` now runs after the France rules and the route files. It only fills S1s still empty at the
+  end, with records nobody claimed, one per S1 and one S1 per record. (Run before the route files, it took 2 records a route
+  had assigned.)
+- **`avg_ce4_v14`** = v13 + 904 first-match pairs (US 456, India 448; 4-CE blend median 0.65): 5,837,764 matches, validator PASS,
+  no record on two S1s, France unchanged. Empty S1 rate now US 5.72%, India 5.73%, France 6.00%. Expected about
+  +0.00008-0.00027 over v13 (raw vs calibrated val x 0.85 US/India share).
+- Full-band Qwen job (`yoddhas-llm-qwen7b-g6e-all-0926-2053`) has been pending for capacity since 26 Sep 20:53 UTC and never ran;
+  v13/v14 include the g5b Qwen scores.
+- **Count-prior tie resolution (Kavya's research note), checked on full train** (every owner present, like test; val cannot
+  measure ties because the same-name twin is almost never a val S1). There are 99k empty-address records whose name is
+  shared by 2+ S1s, and one of those S1s owns the record 92.7% of the time. For 2-way ties with unequal address-match counts:
+  - the S1 with 0 address matches owns the record only 18-29% of the time, against 61-73% for the other S1. It is usually
+    a true singleton, so the proposed "give n=0 members a tied record" rule is wrong;
+  - with both S1s at >= 1, the smaller one owns it 46-70% of the time (the note's direction, but below its own 0.75 bar).
+  - No-go.
+- **Effect on v14.** 187 of v14's 904 first-match picks are such empty-address same-name ties. On raw val they come out even
+  (29 picks: 15 right, 13 on true singletons; +0.000012). On calibrated val they look positive only because the correction
+  hides the twin.
+  - **`avg_ce4_v14b`** = v14 without them (`--first_skip_ea_ties`): v13 + 717 US/India pairs, 5,837,577 matches, validator
+    PASS. Val first-match delta: raw +0.000084, calibrated +0.000177.
+
+## France empty-S1 audit; v15 (27 Sep, 15:05-15:20 UTC)
+- **Empty S1 after v14b:** France 15,558 (6.00%), US 5.73%, India 5.75% (train singleton rate 5.58%).
+- **Records at the empty S1's own number + street + city:** 29% of France empty S1 have at least one, vs 6.7% (US) and 5.4%
+  (India). Almost all are claimed by, or belong to, another tenant of a multi-tenant address (a "Maison des Associations"
+  can hold 100+ S1s), e.g. "Motoamis.Com" -> "Moto Amis SARL". Not a gap.
+- **Best unclaimed candidate (blend >= 0.3, 1,124 France empty S1):**
+  - ~430: records without an address or house number, mostly generic-name ties. Train: an empty S1 rarely owns a tie.
+  - ~250: high-scoring in-place category swaps and same-name records with the number shifted, i.e. the France decoys that
+    DP / HN_A drop.
+  - A few web handles and suffixes.
+  - No clean class. Adding these back would undo LB-validated rules without labels.
+- **Web handles spelling an S1's full name:** France claims 96.6% (US 94.5%, India 96.9%). No gap.
+- **Acronyms at a shared address**, exactly one tenant with those initials: train 99.7% (US 334) / 100% (India 346); test
+  claims US 98.4%, India 99.4%, France 78.2%. 371 France records unclaimed; 7 of them go to S1s that were empty.
+  `--mode acr_shared`.
+- **`avg_ce4_v15`** = v14b + 371 France acronym adds: 5,837,948 matches, validator PASS, no record on two S1s.
+- **France threshold 0.87 -> 0.86 / 0.85** (the same build otherwise; DP / HN_A still run): +428 / +782 France pairs.
+  - Of those, 114 / 221 are same-name ties with no address and 113 / 216 are at addresses shared by 2+ S1s, i.e. coin flips
+    on S1s that already have matches (wrong ~ -0.2, right ~ +0.1). Blanket lowering is ~0 EV; not applied.
+  - **`avg_ce4_v15b`** = v15 + the 288 safe 0.85 adds (`scripts/france_thr_safe.py`): no-address records with a name unique
+    to that S1 (68) and S1s alone at their address (220). 5,838,236 matches, validator PASS. Expected about +0.00001-0.00002.

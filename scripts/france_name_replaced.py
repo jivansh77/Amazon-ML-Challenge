@@ -21,6 +21,9 @@ France S1 whose street key differs only by a typo (rapidfuzz ratio 85-99, no oth
 --mode inv_legal (v13): an invented word plus a legal form ("Nexaria Co"): one core word, in no France S1 name, no word
 shared with the S1, at the house number + street key + city (all non-numeric address parts) of exactly one France S1.
 Train: 96% (US) / 99% (India) matches. Writes --out.
+--mode acr_shared (v15): an acronym record at an address (house number + street key + all non-numeric parts) shared by 2+ France
+S1 where exactly one of them has those initials. Train: 99.7% (US) / 100% (India); test claims US 98%, India 99%, France 78%.
+Writes --out.
 """
 import argparse, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -29,7 +32,7 @@ from ber.io import find_dataset_dir, read_source
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True); ap.add_argument("--claimed", required=True)
-ap.add_argument("--mode", default="exact", choices=["exact", "fuzzy_street", "inv_legal"])
+ap.add_argument("--mode", default="exact", choices=["exact", "fuzzy_street", "inv_legal", "acr_shared"])
 ap.add_argument("--out_inv"); ap.add_argument("--out_acr"); ap.add_argument("--out")
 ap.add_argument("--unique_by", default="country", choices=["country", "city"])
 ap.add_argument("--drop_foreign_handles", action="store_true")
@@ -89,6 +92,24 @@ if a.mode == "fuzzy_street":
     j = j.with_columns((pl.col("sr") >= 60).sum().over("m").alias("n60"))
     out = j.filter((pl.col("sr") >= 85) & (pl.col("sr") < 100) & (pl.col("n60") == 1)).select("s1", "m").unique("m")
     out.write_parquet(a.out); print("France fuzzy-street name-replaced adds:", out.height)
+    sys.exit()
+
+if a.mode == "acr_shared":
+    def citykey(col):
+        comps = pl.col(col).fill_null("").str.split(",").list.eval(pl.element().filter(~pl.element().str.contains(r"\d")).str.normalize("NFKD")
+                                                                   .str.replace_all(r"\p{M}", "").str.to_lowercase().str.replace_all(r"[^a-z]+", " ").str.strip_chars())
+        return comps.list.eval(pl.element().filter(pl.element() != "")).list.unique().list.sort().list.join("|")
+    s1 = keyed(read_fr([1])).with_columns(citykey("business_address").alias("city")).filter(pl.col("city") != "")
+    s1 = s1.select(pl.col("entity_id").alias("s1"), "hn", "sk", "city", pl.col("core").alias("c1")).with_columns(
+        pl.len().over("hn", "sk", "city").alias("nS1"), pl.col("c1").list.eval(pl.element().str.slice(0, 1)).list.join("").alias("init"))
+    raw = pl.col("business_name").fill_null("").str.strip_chars()
+    s23 = read_fr([2, 3]).join(claimed.rename({"m": "entity_id"}), on="entity_id", how="anti")
+    s23 = keyed(s23.filter(~raw.str.contains(" ") & ~raw.str.to_lowercase().str.contains(r"\.com|www|^@|^#")))
+    s23 = s23.with_columns(citykey("business_address").alias("city"), fold("business_name").str.replace_all(r"[^a-z0-9]", "").alias("t2"))
+    s23 = s23.filter((pl.col("city") != "") & (pl.col("t2").str.len_chars() >= 2) & (pl.col("t2").str.len_chars() <= 5)).select(pl.col("entity_id").alias("m"), "hn", "sk", "city", "t2")
+    j = s23.join(s1, on=["hn", "sk", "city"]).with_columns(pl.col("init").str.contains(pl.col("t2"), literal=True).alias("hit"))
+    j = j.with_columns(pl.col("hit").sum().over("m").alias("nhit")).filter(pl.col("hit") & (pl.col("nhit") == 1) & (pl.col("nS1") >= 2))
+    out = j.select("s1", "m").unique("m"); out.write_parquet(a.out); print("France acronym adds at shared addresses:", out.height)
     sys.exit()
 
 if a.mode == "inv_legal":
