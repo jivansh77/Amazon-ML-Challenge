@@ -826,8 +826,20 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   Expected LB about +0.0003-0.0004.
 - `avg_ce4_v4` = `avg_ce4_v3` + the 8,480 native adds (`--extra_pairs`, also added to the candidate file); the v3 part
   reproduces with 0 pair differences; validator PASS with --check-ids.
-- Running on AWS (`yoddhas-route-oocand-0927-1036`, ml.r5.24xlarge): the same route for all non-native, non-empty-address
-  US/India/France records outside the current matches.
+- **General out-of-candidate route (AWS `yoddhas-route-oocand2-0927-1123`, ml.r5.24xlarge; the first run was stopped: the
+  uncapped kNN over 9.2M records would not finish in 3 h, the 96 vCPUs ran like ~8-9 local cores on this sparse product).**
+  Same method for non-native, non-empty-address US/India records (name trigrams capped at df 2%: 2.6x faster, owner in top 5
+  98.8%); train side = 600k random records + records near validation S1 (reverse kNN) + their true matches, 2-fold classifier.
+  Validation (out-of-candidate pairs, unclaimed records): q >= 0.9 493 adds, 53% precise (US 35%, India 70%), -0.00034;
+  q >= 0.98 218 adds, 78%, +0.00002. Blocking already finds the clean Latin-script matches; what is left outside the candidate
+  lists is mostly decoys (invented-name "same building" decoys, branches). Not used; no France route adds either.
+- Other checks: unclaimed empty-address records with a unique same-name S1 are 38% precise on val (-0.0003); E-rule-like adds
+  (same core, stage-2 p >= 0.87) 76% on val (E2 is neutral); invented-name records in the candidate lists are 80% true and the
+  model already claims ~95% of the true ones (decoys differ by unit/suite); main CE ensemble instead of the French CE for France:
+  +4,224 / -2,185 France pairs (adds same-name records on other streets, drops acronyms and typos): not used.
+- **France probe `avg_ce4_v5_frprobe`** = v4 + France threshold 0.85 + 819 same-name / kept-qualifier records with the house
+  number up 1-20 (US 81%, India 99% true for that signature; blend >= 0.5) + 371 empty-address same-name records with stage-2
+  p >= 0.97 and a clear best S1: France +2,135 / -1 vs v4, US/India identical; validator PASS. Expected effect about +-0.00005.
 - **Kavya's `kavyachetwani/ber-final-merge-v1`** (v2h + 11,577 US/India adds, built on a proxy blend dec + base2, val 0.98942):
   R3 phonetic route (Double Metaphone + house number, 8,015 India adds on records v2h leaves unclaimed) and family completion
   (3,562 in-candidate pairs rescored with CE evidence against the S1's accepted records; its own gate failed). Against v4:
