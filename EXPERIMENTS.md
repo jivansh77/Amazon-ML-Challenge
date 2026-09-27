@@ -792,3 +792,9 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   95-97% true for that class), DP abbreviation guard fixed (club~clinique / amis~amicale were treated as abbreviations) and
   dotted legal forms collapsed (S.A.R.L. no longer counts as added words): DP 2,559 -> 2,702.
   `avg_ce4_v3` vs `avg_ce4_v2h`: France +1,382 / -403, US/India identical; validator PASS. Estimate +0.0001.
+- **Qwen2.5-7B LoRA (AWS g5b, 1.9M pairs, training stopped 08:30):** dec val band AUC 0.9547 (stage-2 0.9651; e5-base
+  round 3 0.9567). Added to the avg_ce4 CE ensemble on val (all 95.9k val S1): 0.990098 -> 0.990125 / 0.990162 / 0.990154 /
+  0.990148 for Qwen weight 0.5 / 1 / 2 / 3 - at most +0.00006, below the +0.0001 bar; not used. Its test cut covers only 6%
+  of the LB-confirmed France suffix matches (their blend is ~0.007, the cut starts at 0.05), so it cannot be checked on
+  the France classes either.
+- **Final candidate: `avg_ce4_v3`** (US/India = avg_ce4, France = v3 rules).
