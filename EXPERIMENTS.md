@@ -898,3 +898,50 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
 - **`avg_ce4_v11`** = v10s + 1,727 France acronym adds; validator PASS, no family completion. Expected about +0.0001.
   `scripts/france_name_replaced.py` reproduces both France rules; the exact pairs used are in `artifacts/v11/` with the build
   command.
+
+## Address-relation census and the per-city France gap: v12, v13 (27 Sep, 13:45-14:20 UTC)
+- **Census coverage.** The 08:10 structural census crossed address relation x name operation x qualifier, but only for pairs
+  already in the candidate lists. The v11 census covered records outside the lists, but only at the exact address of one S1.
+  This round adds records outside the lists with other address relations:
+  - **Same street key as exactly one S1, different house number** (train rates per country vs test claims): France has only
+    ~3.4k such records, against ~290k US and ~245k India, because France copies keep the number. The large France classes
+    are the known decoy signature: number up 1-20 with a suffix, swap or added word, and 0% claimed. US train rates for those
+    classes are 0-7%. No gap.
+  - **Name similarity at the exact S1 address** (leetspeak-normalised token_sort_ratio bins x name type): classes where
+    France claims less are category-swap decoys, e.g. unclaimed "Calais Ecole" -> "Calais Centre", "Lille Club" -> "Lille
+    Ecole" (claimed ones are OCR typos). Where US multi-word <55 matches are aliases ("Zetadova formerly Eye Center Inc"),
+    France claims 99.9% of alias names ("dba / fka / formerly ..."), same as US / India. France has no "***" names.
+  - **Zero-overlap two-word names at a unique address** (US 12% matches = every token OCR-corrupted): France's 33k are
+    different businesses at the same address ("Bordeaux Ecole SAS" vs "YKT Compagnie"). No gap.
+  - Name-replaced records with no house number at a unique street + city S1: 13 (not added).
+  - Using every numbered address component instead of the first (apartment / residence parts first): 53 more France
+    records, no train check, not added.
+- **Fuzzy street (v12), train check.** A single-token acronym / invented record on the same house number + city (all
+  non-numeric address parts) as one S1, whose street key differs by a typo (ratio 85-99, no other S1 >= 60), is that S1's
+  match 95.2% (US, 983) / 86.1% (India, 208); exact street: 91.5% / 97.8%. Test claims of the class: US 90.7%, India 85.3%,
+  France 53.5% (v10s) -> 96.4% (v12).
+- **Per-city uniqueness (v13).** The v10s/v11 rules made the S1 unique on (house number, street key) across all of France.
+  The same number + street in another city is common (Rue Voltaire, Bd Victor Hugo), so ~1k clear matches were skipped
+  ("TC" for "Tamarii Compagnie SARL" at 283 Rue Degland, Lille).
+  - Train, record at the (number, street, city) of exactly one S1 whose number + street exists in another city: acronyms
+    100% (US 242, India 1,512), invented 94.2% (US 1,226) / 98.0% (India 3,743).
+  - Test claims of that class: US 91-100%, India 96%, France 41% (invented) / 76% (acronym).
+  - `--unique_by city` finds 1,825 invented + 844 acronym records unclaimed in v12. That is more than the census's 1,167
+    because the rule's city match also accepts the département in place of the region ("Loire-Atlantique" for "Pays de la
+    Loire", "Nord" for "Hauts-de-France"). 179 of them already met the country rule: 114 invented sat below the France
+    threshold (blend 0.86) when the v10s adds were computed, and 65 acronyms were missed by the earlier initials-order bug.
+- **Web handles.** Handles (@x, #x, ...com) with no S1 word inside and not the S1's acronym are 30% (India) / 51% (US) matches
+  in train (with an S1 word: 99.9-100%). Six are dropped from the new invented adds ("@badunion" for "Centre Medical
+  Relais"). The LB-confirmed v10s adds are left unchanged.
+- **Invented word + legal form.** One core word ("Nexaria Co"), in no France S1 name, at a unique S1 address (all non-numeric
+  address parts). Train 95.8% (US 406) / 98.6% (India 358); test claims US 95.4%, India 95.2%, France 47.2% (84 unclaimed).
+  Another real word + legal form is 0% (excluded).
+- **`avg_ce4_v12`** = v11 + 1,181 fuzzy-street adds (764 acronyms, 417 invented): 5,834,113 matches.
+- **`avg_ce4_v13`** = v12 + 1,819 invented + 844 acronym per-city adds + 84 invented + legal-form adds (France +2,747, nothing
+  removed): 5,836,860 matches, validator PASS, no record on two S1s, no family completion. 2,570 S1 touched (45 had no
+  claim).
+  - Expected about +0.00015 over v12, scaling from the LB-measured +0.0003 for the 5,135 v10s invented adds; v12 about
+    +0.00007 over v11.
+  - `scripts/france_name_replaced.py` (`--unique_by city --drop_foreign_handles`, `--mode fuzzy_street`,
+    `--mode inv_legal`) reproduces all four new route files exactly. `artifacts/v13/` has every route file and the build
+    command.
