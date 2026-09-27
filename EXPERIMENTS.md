@@ -1053,3 +1053,28 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
     differs; same-city cases are rare in US/India. Removing ~150 would be worth ~+0.00001; not done.
   - Records at shared France addresses with exactly one same-name tenant: 99.999% claimed. Tail of k: train truth never exceeds
     11 matches per S1, and neither does any test prediction.
+
+## Density audit against train truth; legal-form tie-break; v17 (27 Sep, 16:15-17:20 UTC)
+- **Per-class density check (label-free test audit).** True matches per S1 of any structural class should be the same in train
+  and test (same generator, random S1). For US/India, claimed pairs per 1,000 S1 in test vs true pairs per 1,000 S1 in train,
+  by name relation (same core / subset / overlap / disjoint) x address relation (empty / no number / number+street / number only /
+  street only / neither): every class with an address agrees within +-2 per 1,000 (e.g. US same core + number + street 860.9 vs
+  861.6; changed-number classes by direction and legal-form change also agree, e.g. US lower number + legal form kept 24.5 vs
+  24.2). The whole US/India shortfall is address-less records: US -64 per 1,000 (same core -31, overlap -26, subset -7), India -58.
+  Precision cannot be read off the densities, but the recall side of US/India is at the tie ceiling.
+- **Address-less records with no exact-name S1** (typos): train owner has a unique name only ~50% of the time (US 39.7k of 78.5k,
+  India 22k of 46k); the model claims ~48% of them in test, i.e. the resolvable part.
+- **Other tie signals checked on train, all coin flips:** file row order (Spearman 0.001, rows shuffled), per-S1 source split
+  (n2/n3 spread 1-4), name similarity to the twin's other copies in the same source (48% / 53%), full-name identity (74% US).
+- **Test decoys come in clusters.** Groups of 2+ unclaimed records with the same core name + number + street: US 38.8 per 1,000
+  S1 in test vs 1.4 unmatched in train, France 20.9 (decoy "branches" with several copies; legal form changed, number shifted).
+  Claimed records whose branch twin is unclaimed at a changed number: US 995, India 713, France 394; not removed (in train 55% of
+  changed-number true matches share their number with a sibling, mostly in the same source).
+- **Legal-form tie-break.** Address-less record carrying a legal form, core name shared by 2+ S1s, exactly one of them with that
+  legal form (canonicalised). Train precision by the number of same-name S1s without any legal form (n0): n0 = 0 95.1% (US 3,810)
+  / 96.7% (India 365); n0 = 1 90.3% / 91.0%; n0 = 2 83.9% / 83.5%; n0 >= 3 56-61%. France copies never swap the legal form
+  (claimed same-name pairs: swapped 0.02%, US 2.6%; only 150 same-address swapped records), so France uses n0 <= 2 and also
+  case B (the record's form is on none of the twins, exactly one twin has no form; US 80% / India 39% in train because they swap).
+  Test adds on records unclaimed in v16: France 483 (A) + 199 (B), US 89, India 52 = 823 (US/India already claim most of these).
+- **`avg_ce4_v17`** = v16 + `artifacts/v17/legal_tie_adds.parquet` (`scripts/legal_tie.py`): 5,840,027 matches, validator PASS
+  with --check-ids. Expected about +0.00002-0.00003 over v16.
