@@ -292,7 +292,9 @@ if rules:
         pred = pl.concat([pred, add]).unique(maintain_order=True); log("HNK kept-qualifier changed-number adds:", add.height)
 xtra = None
 if a.extra_pairs:
-    xp = pl.concat([pl.read_parquet(f, columns=["s1", "m"]) for f in a.extra_pairs.split(",")]).unique()
+    # one S1 per record: when several route files propose the same record, the earlier file wins (files are in priority order)
+    xp = pl.concat([pl.read_parquet(f, columns=["s1", "m"]).with_columns(pl.lit(i).alias("_pri")) for i, f in enumerate(a.extra_pairs.split(","))])
+    xp = xp.sort("_pri", maintain_order=True).unique("m", keep="first", maintain_order=True).drop("_pri")
     xtra = xp.join(pred.select("m").unique(), on="m", how="anti").join(tec.select("s1"), on="s1")
     pred = pl.concat([pred, xtra]).unique(maintain_order=True); log("extra-route adds (unclaimed records):", xtra.height, "of", xp.height)
 s1_ids = tec["s1"].to_list()

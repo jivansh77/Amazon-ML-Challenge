@@ -858,3 +858,43 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   roughly 87% precise, about +0.0001 LB; not validated on our blend.
 - **`avg_ce4_v6_kv`** = v4 + her 7,156 R3/R6 adds on records v4 leaves unclaimed (outside the candidate lists; family
   completion not included). **`avg_ce4_v7_kv_fr`** = v6 + the v5 France bundle. Both validator PASS.
+- **LB: `avg_ce4_v6_kv` = 0.989052** (v2h 0.98809, +0.00096; expected ~+0.0006: v3 France ~+0.0001, native route ~+0.0004 by
+  val, R3/R6 extras ~+0.0001). The India out-of-candidate routes transfer at least as well as validation suggests.
+- India in-candidate misses on val (355) are mostly invented names at the S1's address and small number changes (203 -> 204,
+  B-81 -> B-83); addresses with a prepended "Block / Door No / Plot" number are only 100 of them. No rule.
+- **`avg_ce4_v8_kv_fam_fr`** = v6 + Kavya's family-completion adds (3,559 on records unclaimed in v6) + the France bundle
+  (+2,135 France). Probe for the last two submissions; validator PASS.
+- **Kavya's list of unused val-positive items.** Qwen in the CE ensemble at weight 1: val 0.990098 -> 0.990162 (+0.00006; US
+  +0.00012, India -0.00002; rebuilt val blend reproduces the stored one exactly); Qwen test scores cover 26% of India's and 41%
+  of the US band (France keeps the French CE). Legal-form tie-breaker (nsn 2-3, record has a legal form): val +0.00003; 1,258
+  test adds (US 578, India 384, France 296). First match for empty S1: not used (57% precise on val, every error is a full
+  singleton loss, and test has twice the decoys). R3 disputed native records: already in v6. `final_build.py --extra_pairs` now
+  keeps one S1 per record across route files (earlier files win).
+- **`avg_ce4_v9s_safe`** = v6 + Qwen + tie-breaker (val-positive only); **`avg_ce4_v9_all`** = v9s + family completion +
+  France bundle. Both validator PASS, no record on two S1.
+- **Val bias found (hidden owners).** In the val set, a record owned by a non-val S1 looks unclaimed (its owner is not scored),
+  so any rule that adds unclaimed records is charged with false positives that cannot happen on test, where the owner is
+  present. Rule K (Kavya: best unclaimed candidate in [0.55, 0.8) for S1 with k <= 2, match profile) on US/India val: raw 750
+  adds at 58% (-0.00057); with non-val-owned records removed 466 at 94% (+0.00054); without empty-address records only 74-81
+  adds at 82-89% (+0.00004-0.00006). The empty-address part is an artifact of the correction (same-name ties: the owner does
+  not reliably win), so Rule K is small for US/India. Global US/India threshold on corrected val: address records 0.8 -> 0.5-0.7
+  +0.00014-0.00028 (keep 0-10% of non-val-owned records), empty-address records +0.0011-0.0014 (artifact). Not applied.
+- **France invented-name records (the France blocking gap).** Full train labels: a single-token record with no name overlap at
+  the same house number + street key as exactly ONE S1 is that S1's match 94.2% (US) / 94.9% (India); the non-matches are
+  street-key collisions across different cities (exact address: 99.9%). Test claim rate of that class: US 94.2%, India 92.7%
+  (= base rate; their leftovers are the cross-city collisions: val precision of unclaimed ones 32%), **France 59.7%**. Of the
+  5,198 unclaimed France records, 5,135 are in the same city and only 507 were ever candidates (blend median 0.77 < 0.87);
+  4,691 were never proposed by blocking. Same invented-name vocabulary as US/India (Onyxwex, ZEPHBRIXUMBRA...). Added as a
+  France rule (5,135 pairs on ~5,020 S1; 1,750 of those S1 had k <= 2). Expected about +0.0002-0.00025.
+- **`avg_ce4_v10s`** = v6 + Qwen + tie-breaker + France invented-name adds; **`avg_ce4_v10fr`** = v10s + France bundle. No family
+  completion in either (357 of its pairs are claimed by the Qwen-augmented decoder itself). Both validator PASS.
+- **LB: `avg_ce4_v10s` = 0.989412** (v6 0.989052, +0.00036; Qwen + tie-breaker ~+0.00005 by val, so the France invented-name
+  rule gave ~+0.0003, more than estimated).
+- **Name-type census at unique S1 addresses** (train match rate vs test claim rate US / India / France, after v10s): same 99.6%
+  (99.8 / 96.7 / 100), drop 99.9%, web 95.7% (97 / 94 / 97), suffix 99.3% (99 / 96 / 98), invented 93.6% (93 / 92 / 94 after the
+  rule), **acronym 100% (99.8 / 99.8 / 83.4)**; swap1 91% and multi 60% are France's category-swap decoys (47% / 10%), excluded.
+  France acronyms: 1,730 unclaimed, 1,727 in the same city, only 228 ever candidates (blend median 0.78); e.g. "CG" for
+  "Chasseurs Groupe SARL" at the same street and number.
+- **`avg_ce4_v11`** = v10s + 1,727 France acronym adds; validator PASS, no family completion. Expected about +0.0001.
+  `scripts/france_name_replaced.py` reproduces both France rules; the exact pairs used are in `artifacts/v11/` with the build
+  command.
