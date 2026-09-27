@@ -777,3 +777,18 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
 
 - **LB: `avg_ce4_v2h` = 0.98809** (previous best 0.986665, +0.00143; label-free estimate was +0.0013). US/India part (avg_ce4)
   is ~+0.0002 by validation, so the France v2 rules gave ~+0.0012 (France F0.5 about +0.008).
+
+## After LB 0.98809: census against US/India labels, v3 (27 Sep, 08:10 UTC)
+- Structural census (address relation x name operation x qualifier change, record-level best S1) comparing France claim
+  rates with US/India true rates. Checked and ruled out as big levers: same-name records on a different street (France's are
+  generic "City + Category" names on genuinely different streets), empty-address records (train: 97.7% of empty-address
+  records are true matches, 99.5% when one S1 has the same name; France already claims 96% of those; the rest are ties
+  between same-name S1s), per-source counts (France is ~0.06 short in both S2 and S3), empty France S1 (their same-address
+  records are category-swap decoys of singletons), US/India val errors (6,257 FN vs 394 FP, dominated by empty-address ties).
+- First match for empty S1 (best exclusive candidate with p >= t): val +0.00003..+0.00012 over t = 0.5..0.75 but only
+  57% precise (47 of 83 adds right, 35 on true singletons); not used.
+- v3 fixes (France only): A2P (A2 with the position check: in-place Groupe is a category swap, -~250), A2N (suffix operation
+  on records whose house number was dropped, street words of the S1 in the record's address, same city: +1,278; US/India
+  95-97% true for that class), DP abbreviation guard fixed (club~clinique / amis~amicale were treated as abbreviations) and
+  dotted legal forms collapsed (S.A.R.L. no longer counts as added words): DP 2,559 -> 2,702.
+  `avg_ce4_v3` vs `avg_ce4_v2h`: France +1,382 / -403, US/India identical; validator PASS. Estimate +0.0001.

@@ -28,6 +28,9 @@ ap.add_argument("--w", type=float, default=0.6)
 ap.add_argument("--thr", default="US=0.8,India=0.8,France=0.87")
 ap.add_argument("--rules", default="A2,HN_A,D", help="France rules to apply (empty = none): A2, A2F, HN_A, D, DP, E, E2, OOC, HNK")
 ap.add_argument("--e_margin", type=float, default=15.0)
+ap.add_argument("--first_min", default="", help="S1 with no match after decoding: add its best exclusive candidate when p >= this "
+                "(per country, e.g. US=0.6,India=0.6,France=0.6); for an empty S1 the F0.5 break-even precision is ~0.5, not ~0.73")
+ap.add_argument("--collapse_legal", action="store_true", help="France rules: collapse dotted legal forms (S.A.R.L.) before comparing names")
 a = ap.parse_args()
 os.makedirs(a.out, exist_ok=True)
 dd = find_dataset_dir(a.data)
@@ -63,6 +66,12 @@ te = ts.with_columns(pl.col("p").alias("p_model")).join(ens, on=["s1", "m"], how
 thr = {k: float(v) for k, v in (x.split("=") for x in a.thr.split(","))}
 pred = decode_by_country(te.select("s1", "m", "p"), thr, tec)
 log("decoded:", pred.height, "pairs; thresholds", thr)
+if a.first_min:
+    fm = {k: float(v) for k, v in (x.split("=") for x in a.first_min.split(","))}
+    ex = te.select("s1", "m", "p").filter(pl.col("p") == pl.col("p").max().over("m")).join(pred.select("s1").unique(), on="s1", how="anti").join(tec, on="s1")
+    add = ex.sort("p", descending=True).group_by("s1").first()
+    add = add.filter(pl.col("p") >= pl.col("country").replace_strict(fm, default=1.1, return_dtype=pl.Float64)).select("s1", "m")
+    pred = pl.concat([pred, add]); log("first-match adds for empty S1:", add.height, fm)
 pred.write_parquet(f"{a.out}/pred_before_rules.parquet")
 
 # ---- France generator rules (label-free; see EXPERIMENTS.md "France generator rules") ----
@@ -123,7 +132,7 @@ def is_abbrev(aw, dw):
     it = iter(aw)
     if all(c in it for c in dw):
         return True
-    return (len(aw) <= 4 and aw[:1] == dw[:1]) or fuzz.ratio(aw, dw) >= 70
+    return (len(aw) <= 4 and aw[:1] == dw[:1] and set(aw) <= set(dw)) or fuzz.ratio(aw, dw) >= 70
 
 
 def street_key(col):
@@ -150,7 +159,11 @@ if rules:
         return (pl.col(col).fill_null("").str.normalize("NFKD").str.replace_all(r"\p{M}", "").str.to_lowercase()
                 .str.replace_all(r"[^\p{L}\p{N}]+", " ").str.strip_chars())
     def prep(df):
-        df = df.with_columns(norm("business_name").alias("n"), norm("business_address").alias("a"))
+        if a.collapse_legal:   # S.A.R.L. / E.U.R.L. / S.A.S. ... -> one token, so they do not count as added or dropped words
+            df = df.with_columns(legal_tokens("business_name").list.join(" ").alias("_nc"))
+            df = df.with_columns(norm("_nc").alias("n"), norm("business_address").alias("a")).drop("_nc")
+        else:
+            df = df.with_columns(norm("business_name").alias("n"), norm("business_address").alias("a"))
         return df.with_columns(
             pl.col("n").str.split(" ").list.eval(pl.element().filter(~pl.element().is_in(STOP) & (pl.element() != ""))).list.unique().alias("core"),
             pl.col("a").str.extract(r"(\d+)", 1).str.strip_chars_start("0").alias("hn"))
@@ -168,10 +181,13 @@ if rules:
         pl.when(pl.col("hn").is_null() | pl.col("hn2").is_null()).then(pl.lit(None, pl.Boolean)).otherwise(pl.col("hn") == pl.col("hn2")).alias("same_hn"),
     ).with_columns(pl.col("added").list.len().alias("na"), pl.col("added").list.first().alias("aw"),
                    pl.col("core2").list.set_difference(pl.col("core")).list.first().alias("dw")).drop("n", "a", "n2", "a2", "core", "core2", "added")
-    if "A2" in rules:      # French noise suffix added, number kept, record unclaimed: its best S1 (by name + address similarity)
+    if "A2" in rules or "A2P" in rules:  # French noise suffix added, number kept, record unclaimed: its best S1 (by name + address)
         best = cp.with_columns((pl.col("rn") + pl.col("ra")).alias("sc")).sort("sc", descending=True).group_by("m").first()
         add = (best.join(pred.select("m").unique(), on="m", how="anti")
-               .filter((pl.col("same_hn") == True) & (pl.col("nd") <= 1) & (pl.col("na") == 1) & pl.col("aw").is_in(SUFFIX)).select("s1", "m"))
+               .filter((pl.col("same_hn") == True) & (pl.col("nd") <= 1) & (pl.col("na") == 1) & pl.col("aw").is_in(SUFFIX)))
+        if "A2P" in rules:  # not in the middle of the name: an in-place Groupe is a category swap (Groupe is also a category word)
+            add = with_position(add, "raw").filter(pl.col("pos").is_in(OK_POS))
+        add = add.select("s1", "m")
         pred = pl.concat([pred, add]).unique(maintain_order=True); log("A2 suffix adds:", add.height)
     if "A2F" in rules:     # the same suffix operation with France / Services / Cie, which only the position separates from a
                            # category swap: the suffix is appended after the legal form (or at the end / front of the name)
@@ -180,6 +196,19 @@ if rules:
                .filter((pl.col("same_hn") == True) & (pl.col("nd") <= 1) & (pl.col("na") == 1) & pl.col("aw").is_in(NEW_SUF)))
         add = with_position(add, "raw").filter(pl.col("pos").is_in(OK_POS)).select("s1", "m")
         pred = pl.concat([pred, add]).unique(maintain_order=True); log("A2F France/Services/Cie suffix adds:", add.height)
+    if "A2N" in rules:     # the suffix operation on a record whose house number was dropped: the S1's street words all in the
+                           # record's address, same city (US/India labels: 95-97% true matches for this class)
+        best = cp.with_columns((pl.col("rn") + pl.col("ra")).alias("sc")).sort("sc", descending=True).group_by("m").first()
+        c = (best.join(pred.select("m").unique(), on="m", how="anti")
+             .filter(pl.col("hn").is_null() & pl.col("hn2").is_not_null() & (pl.col("nd") <= 1) & (pl.col("na") == 1) & pl.col("aw").is_in(SUF_ALL)))
+        c = with_position(c, "raw").filter(pl.col("pos").is_in(OK_POS)).join(
+            t1.select(pl.col("entity_id").alias("s1"), pl.col("business_address").alias("A1")), on="s1").join(
+            t23.select(pl.col("entity_id").alias("m"), pl.col("business_address").alias("A2"), pl.col("a").alias("a2n")), on="m")
+        c = c.with_columns(street_key("A1").alias("sk1"), city("A1").alias("c1"), city("A2").alias("c2"))
+        c = c.filter((pl.col("sk1") != "") & (pl.col("sk1").str.split(" ").list.set_difference(pl.col("a2n").str.split(" ")).list.len() == 0)
+                     & ~(pl.col("c1").is_not_null() & pl.col("c2").is_not_null() & (pl.col("c1") != pl.col("c2"))))
+        add = c.select("s1", "m")
+        pred = pl.concat([pred, add]).unique(maintain_order=True); log("A2N suffix adds on records without a house number:", add.height)
     if "HN_A" in rules:    # claimed France pairs with a changed house number and blend < 0.998
         drop = pred.join(cp.filter(pl.col("hn").is_not_null() & pl.col("hn2").is_not_null() & (pl.col("hn") != pl.col("hn2")) & (pl.col("bp") < 0.998)),
                          on=["s1", "m"]).select("s1", "m")
