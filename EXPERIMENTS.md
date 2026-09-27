@@ -828,3 +828,13 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   reproduces with 0 pair differences; validator PASS with --check-ids.
 - Running on AWS (`yoddhas-route-oocand-0927-1036`, ml.r5.24xlarge): the same route for all non-native, non-empty-address
   US/India/France records outside the current matches.
+- **Kavya's `kavyachetwani/ber-final-merge-v1`** (v2h + 11,577 US/India adds, built on a proxy blend dec + base2, val 0.98942):
+  R3 phonetic route (Double Metaphone + house number, 8,015 India adds on records v2h leaves unclaimed) and family completion
+  (3,562 in-candidate pairs rescored with CE evidence against the S1's accepted records; its own gate failed). Against v4:
+  4,686 R3 pairs are identical to the native-route adds (same record, same S1; 11 records differ). R3's other 3,319 adds on
+  records v4 leaves unclaimed: 2,023 native-script records where the native classifier prefers another same-name S1 and gives
+  the R3 pair q ~0.02 (generic names such as "Balaji Finance" with only "H.NO 6, DELHI" as address; the R3 S1 carries the
+  record's legal form in 1,406 of 1,630 disputed cases vs 969 for the classifier's pick, i.e. roughly 80% precise, worth about
+  +0.00002) and 1,296 Latin-script records. The family adds are pairs the submitted blend scored and rejected (US: 548 with
+  blend 0.2-0.5, 145 with 0.05-0.2); the stronger blend already claims half of what family completion adds on the proxy (test
+  0.24% of S1 vs val 0.45%), and rejected in-candidate pairs are the least precise class on our val. Not merged.
