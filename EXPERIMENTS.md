@@ -945,3 +945,33 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   - `scripts/france_name_replaced.py` (`--unique_by city --drop_foreign_handles`, `--mode fuzzy_street`,
     `--mode inv_legal`) reproduces all four new route files exactly. `artifacts/v13/` has every route file and the build
     command.
+
+## Hidden-owner correction calibrated to test; first match for empty S1 (v14) (27 Sep, 14:20-14:55 UTC)
+- **Calibration.** The hidden-owner "corrected val" removes every record owned by a non-val S1. That assumes test has no such
+  unowned look-alikes. Checked directly: per 1,000 S1, count the records whose best score falls in a band. On val, split them
+  by owner (true match / unowned decoy / another val S1 / non-val S1 = "hidden"); on test, count them all. The share of hidden
+  records val must keep to match test's count is the calibrated keep share.
+  - True-match density agrees at the top: best score >= 0.99, address records: test 3,322 vs val true matches 3,314 (US) and
+    3,316 vs 3,311 (India).
+  - In the address bands 0.5-0.6 / 0.6-0.7 / 0.7-0.8, test has as many unowned records as the RAW val or more. Keep share:
+    US 0.36 / 0.76 / 1.06, India 0.17 / 0.28 / 1.31. Empty-address bands look like the corrected val (0-0.26, India 0.7-0.8
+    0.92), but there the correction hides same-name ties whose owner is present on test.
+  - Implied test precision of address records scored 0.5-0.8 is only 54-70% (corrected val said ~80%).
+- **Options re-scored** (val F0.5 deltas; raw / corrected / calibrated):
+  - address threshold 0.8 -> 0.7: -0.00005 / +0.00017 / -0.00005;
+  - address threshold 0.8 -> 0.6: -0.00038 / +0.00021 / -0.00020;
+  - Rule K on address records only (k <= 2): -0.00021 / +0.00006 / -0.00008 (61% precise);
+  - Not applied: their corrected-val gain came from the removed unowned records.
+- **First match for empty S1** (best candidate whose best S1 it is, blend >= t): t = 0.5 gives +0.000096 / +0.00038 / +0.000315
+  (calibrated: 63 adds, 48 right, 15 on true singletons). For an empty S1 a wrong add costs only when the S1 is a true
+  singleton, so the break-even is ~0.5, not ~0.73. Lower t is negative on raw val: t = 0.4 -0.00015, t = 0.3 -0.00078 (156 of
+  246 adds on true singletons). Applied at t = 0.5 for US/India only. France is left to the France empty-S1 audit, because the
+  France empty S1s with a high unclaimed score are mostly category swaps that DP dropped.
+- `--first_min` in `final_build.py` now runs after the France rules and the route files. It only fills S1s still empty at the
+  end, with records nobody claimed, one per S1 and one S1 per record. (Run before the route files, it took 2 records a route
+  had assigned.)
+- **`avg_ce4_v14`** = v13 + 904 first-match pairs (US 456, India 448; 4-CE blend median 0.65): 5,837,764 matches, validator PASS,
+  no record on two S1s, France unchanged. Empty S1 rate now US 5.72%, India 5.73%, France 6.00%. Expected about
+  +0.00008-0.00027 over v13 (raw vs calibrated val x 0.85 US/India share).
+- Full-band Qwen job (`yoddhas-llm-qwen7b-g6e-all-0926-2053`) has been pending for capacity since 26 Sep 20:53 UTC and never ran;
+  v13/v14 include the g5b Qwen scores.

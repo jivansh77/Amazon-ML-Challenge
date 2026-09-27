@@ -28,7 +28,7 @@ ap.add_argument("--w", type=float, default=0.6)
 ap.add_argument("--thr", default="US=0.8,India=0.8,France=0.87")
 ap.add_argument("--rules", default="A2,HN_A,D", help="France rules to apply (empty = none): A2, A2F, HN_A, D, DP, E, E2, OOC, HNK")
 ap.add_argument("--e_margin", type=float, default=15.0)
-ap.add_argument("--first_min", default="", help="S1 with no match after decoding: add its best exclusive candidate when p >= this "
+ap.add_argument("--first_min", default="", help="S1 with no match after decoding, rules and routes: add its best unclaimed candidate when p >= this "
                 "(per country, e.g. US=0.6,India=0.6,France=0.6); for an empty S1 the F0.5 break-even precision is ~0.5, not ~0.73")
 ap.add_argument("--collapse_legal", action="store_true", help="France rules: collapse dotted legal forms (S.A.R.L.) before comparing names")
 ap.add_argument("--extra_pairs", default="", help="parquet files of (s1, m) pairs from an extra candidate route (e.g. the native-script route, "
@@ -69,12 +69,6 @@ te = ts.with_columns(pl.col("p").alias("p_model")).join(ens, on=["s1", "m"], how
 thr = {k: float(v) for k, v in (x.split("=") for x in a.thr.split(","))}
 pred = decode_by_country(te.select("s1", "m", "p"), thr, tec)
 log("decoded:", pred.height, "pairs; thresholds", thr)
-if a.first_min:
-    fm = {k: float(v) for k, v in (x.split("=") for x in a.first_min.split(","))}
-    ex = te.select("s1", "m", "p").filter(pl.col("p") == pl.col("p").max().over("m")).join(pred.select("s1").unique(), on="s1", how="anti").join(tec, on="s1")
-    add = ex.sort("p", descending=True).group_by("s1").first()
-    add = add.filter(pl.col("p") >= pl.col("country").replace_strict(fm, default=1.1, return_dtype=pl.Float64)).select("s1", "m")
-    pred = pl.concat([pred, add]); log("first-match adds for empty S1:", add.height, fm)
 pred.write_parquet(f"{a.out}/pred_before_rules.parquet")
 
 # ---- France generator rules (label-free; see EXPERIMENTS.md "France generator rules") ----
@@ -297,6 +291,16 @@ if a.extra_pairs:
     xp = xp.sort("_pri", maintain_order=True).unique("m", keep="first", maintain_order=True).drop("_pri")
     xtra = xp.join(pred.select("m").unique(), on="m", how="anti").join(tec.select("s1"), on="s1")
     pred = pl.concat([pred, xtra]).unique(maintain_order=True); log("extra-route adds (unclaimed records):", xtra.height, "of", xp.height)
+if a.first_min:
+    # S1s still without a match after decoding, the France rules and the route files: add the best record whose best-scoring S1
+    # is this one and that nothing has claimed, when p >= the country's floor (for an empty S1 a wrong add only costs on a true
+    # singleton, so the break-even is ~0.5). One record per S1 and one S1 per record.
+    fm = {k: float(v) for k, v in (x.split("=") for x in a.first_min.split(","))}
+    ex = (te.select("s1", "m", "p").filter(pl.col("p") == pl.col("p").max().over("m"))
+          .join(pred.select("s1").unique(), on="s1", how="anti").join(pred.select("m").unique(), on="m", how="anti").join(tec, on="s1"))
+    add = ex.sort("p", descending=True).unique("m", keep="first", maintain_order=True).group_by("s1", maintain_order=True).first()
+    add = add.filter(pl.col("p") >= pl.col("country").replace_strict(fm, default=1.1, return_dtype=pl.Float64)).select("s1", "m")
+    pred = pl.concat([pred, add]).unique(maintain_order=True); log("first-match adds for S1 still empty:", add.height, fm)
 s1_ids = tec["s1"].to_list()
 cand = te.select("s1", "m")
 if rules and "OOC" in rules:
