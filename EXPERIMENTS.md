@@ -864,3 +864,11 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   B-81 -> B-83); addresses with a prepended "Block / Door No / Plot" number are only 100 of them. No rule.
 - **`avg_ce4_v8_kv_fam_fr`** = v6 + Kavya's family-completion adds (3,559 on records unclaimed in v6) + the France bundle
   (+2,135 France). Probe for the last two submissions; validator PASS.
+- **Kavya's list of unused val-positive items.** Qwen in the CE ensemble at weight 1: val 0.990098 -> 0.990162 (+0.00006; US
+  +0.00012, India -0.00002; rebuilt val blend reproduces the stored one exactly); Qwen test scores cover 26% of India's and 41%
+  of the US band (France keeps the French CE). Legal-form tie-breaker (nsn 2-3, record has a legal form): val +0.00003; 1,258
+  test adds (US 578, India 384, France 296). First match for empty S1: not used (57% precise on val, every error is a full
+  singleton loss, and test has twice the decoys). R3 disputed native records: already in v6. `final_build.py --extra_pairs` now
+  keeps one S1 per record across route files (earlier files win).
+- **`avg_ce4_v9s_safe`** = v6 + Qwen + tie-breaker (val-positive only); **`avg_ce4_v9_all`** = v9s + family completion +
+  France bundle. Both validator PASS, no record on two S1.
