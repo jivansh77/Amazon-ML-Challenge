@@ -678,3 +678,8 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   clean val (94,368 S1) 0.98994 -> **0.99007** at the leaderboard thresholds (0.75: 0.98996 -> 0.99010).
 - Candidate `avg_D` (+ French CE for 31,857 new France band pairs, A2 + HN_A + D): validator PASS, 11,322 S1
   differ from `kv_HN_A`, 4.41 candidates per S1 (was 4.26).
+- e5-base round 4 (Kaggle P100, new-route bands): `base4` (base3 + ce4 data) val-band AUC 0.9542, `base4b`
+  (base3b + ce3 data) 0.9550 (base3 0.9527). Clean val at 0.8, route average: base3 0.99011, base4 0.99018,
+  **base3 + base4 + base4b (equal logit average) 0.99019** (top-5 route + base3 = 0.98998, i.e. +0.00021).
+- Candidate `avg_ce4_D` (route average + 3-CE ensemble + French CE + A2/HN_A/D): validator PASS; vs `kv_HN_A`
+  12,600 S1 differ; vs `avg_D` only US/India change (3,181 S1).
