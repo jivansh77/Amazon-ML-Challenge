@@ -726,3 +726,135 @@ US is unchanged. Rejected: the CE already carries the transferable signal.
   already contains India. So the generator's match noise never adds the country word: France '+france' records
   (6,302 same-number single adds) are not matches of the S1 without "France"; the model rejects them (0.9%
   claimed) and D drops the claimed ones. Settled; no change.
+
+## France suffix operation, position signature and number perturbation (27 Sep, v2 rules)
+- **The suffix operation.** In US/India labels, "drop one S1 word + add Center/Services/Service/Partners" at the same house
+  number is 97-99% true matches, and the added word is appended AFTER the legal form ("Great Indo Infra Pvt Ltd" -> "Great Indo
+  Pvt Ltd Services"; 88-92% after the legal form, the rest reordered). The same operation exists in France with a French list:
+  fils, groupe, associes, developpement (the A2 words) and also **france, services, cie**. Position of the added word among
+  France same-number one-word swaps (share after the legal form): fils 0.995, associes 0.996, developpement 0.89, france 0.88,
+  groupe 0.84, services 0.84, cie 0.79; when before the legal form, these words sit at the very front ("France Mamzelles SAS";
+  france 99.6%, developpement 100%). Category swaps are **in place** (club/comite/amicale/ecole 0.13-0.16 after, ~1% front) -
+  and so are **centre, compagnie, service, federation** (0.10-0.15), which the model claims at 39-84% because Center/Service
+  are match words in the US. "+france" swaps: 4,846 same-number pairs (like groupe 4,317, associes 4,090), same dropped-word
+  profile as the A2 words, "France" essentially never in the middle (19 of 6.3k); the old India argument does not apply (no
+  "+india" record exists in train at all, and the US/India suffix list is Center/Services/Service/Partners).
+- **Out-of-candidate suffix records.** 7.4k France records with the suffix operation (same number + street + city as exactly
+  one S1) are in NO candidate list: the stage-1 filter drops them because the model reads the French suffixes as decoy words,
+  so A2 could never reach them.
+- **Number perturbation vs decoy shift.** US/India labels, same core name + same street + changed first number: with the legal
+  form added or swapped it is a decoy (US 11-28% match: "Patel Seafood" -> "Patel Seafood Co | 120 -> 129"), with the legal
+  form kept/dropped/absent it is a match (US 97%, India 98%). Decoys shift the number UP by 1-20 (US 85%); matches have a
+  smaller number (79%) or >100. A record number of "1" is a match 97.7-100%. France follows the same decoy profile (33k
+  legal-changed pairs: 90% shifted up by 1-20, claimed 0%), and an extra "France" (S1 already "(France)") behaves like a legal
+  qualifier ("In Fetes (France) SARL | 10" -> "In Fetes (France) France SARL | 11"). HN_A (LB-tested only together with A2)
+  dropped ~1.7k keep-qualifier pairs with the match profile; the kept-qualifier + (smaller or >100) class is HNK.
+- A second France decoy operation: category -> Centre/Compagnie/Federation/Service with a shifted number ("Crapahute Club SAS |
+  4" -> "Crapahute Compagnie SAS | 7"), like India's "South Consultants | 6" -> "South Partnership | 8".
+- Checked, no rule: legal-form swaps with same name and number (2,848; 2,698 on a different street), misattribution between
+  same-name S1s (0), unclaimed same-core same-number records (97% on a different street), empty-address records (12.7k of the
+  19.6k unclaimed tie between 2+ same-name S1s), the 0.80-0.87 France band after DP (mixed: empty-address, invented names,
+  swaps, acronyms).
+- Matches per S1 (train truth, identical for US and India): mean 3.46, P(1) 5.4%, P(2) 17.0%. Test predictions: US 3.38,
+  France 3.21 (kv_HN_A) -> 3.25 (v2); France's excess of k=1/k=2 S1s is the recall gap the v2 adds target.
+
+**v2 rules in `scripts/final_build.py`** (France only; A2/HN_A/D/E unchanged, the LB file reproduces with 0 pair differences):
+- A2F: +France/Services/Cie suffix adds (unclaimed record, best S1 by name + address, same number, appended/front/last).
+- DP: drop claimed in-place category swaps over the derived French category vocabulary (dropped-word count >= 40, 164 words),
+  not suffix words, not abbreviations/typos; replaces D (D also dropped the "+france" suffix records).
+- E2: E with the v2 suffix words. OOC: out-of-candidate suffix records, added to the candidate file too (legal form not
+  swapped, all address numbers equal, same city, unique S1). HNK: see above.
+
+| Build (avg_ce4 = top-5 + top-10 route average, CE base3 + base4 + base4b, French CE incl. 31,857 new band pairs) | France pairs | vs kv_HN_A |
+|---|---|---|
+| avg_ce4_DE (previous candidate: A2, HN_A, D, E) | 832,962 | France +3,171 / -2,728 |
+| **avg_ce4_v2** (A2 25,833, A2F 5,764, HN_A -4,016, DP -2,559, E2 2,096, OOC 6,760) | 844,442 | France +15,873 / -3,950 |
+| **avg_ce4_v2h** (+ HNK 2,853: 652 number->1, 1,158 >+100, 1,043 smaller) | 847,295 | **LB 0.98809** |
+
+US/India are identical in all three (avg_ce4: all-val F0.5 0.98997 -> 0.99010). Validator PASS with --check-ids. Files in
+Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +0.0003, OOC +0.00025, E2 +0.0001, HNK
++0.0002, avg_ce4 US/India +0.0002.
+
+- **LB: `avg_ce4_v2h` = 0.98809** (previous best 0.986665, +0.00143; label-free estimate was +0.0013). US/India part (avg_ce4)
+  is ~+0.0002 by validation, so the France v2 rules gave ~+0.0012 (France F0.5 about +0.008).
+
+## After LB 0.98809: census against US/India labels, v3 (27 Sep, 08:10 UTC)
+- Structural census (address relation x name operation x qualifier change, record-level best S1) comparing France claim
+  rates with US/India true rates. Checked and ruled out as big levers: same-name records on a different street (France's are
+  generic "City + Category" names on genuinely different streets), empty-address records (train: 97.7% of empty-address
+  records are true matches, 99.5% when one S1 has the same name; France already claims 96% of those; the rest are ties
+  between same-name S1s), per-source counts (France is ~0.06 short in both S2 and S3), empty France S1 (their same-address
+  records are category-swap decoys of singletons), US/India val errors (6,257 FN vs 394 FP, dominated by empty-address ties).
+- First match for empty S1 (best exclusive candidate with p >= t): val +0.00003..+0.00012 over t = 0.5..0.75 but only
+  57% precise (47 of 83 adds right, 35 on true singletons); not used.
+- v3 fixes (France only): A2P (A2 with the position check: in-place Groupe is a category swap, -~250), A2N (suffix operation
+  on records whose house number was dropped, street words of the S1 in the record's address, same city: +1,278; US/India
+  95-97% true for that class), DP abbreviation guard fixed (club~clinique / amis~amicale were treated as abbreviations) and
+  dotted legal forms collapsed (S.A.R.L. no longer counts as added words): DP 2,559 -> 2,702.
+  `avg_ce4_v3` vs `avg_ce4_v2h`: France +1,382 / -403, US/India identical; validator PASS. Estimate +0.0001.
+- **Qwen2.5-7B LoRA (AWS g5b, 1.9M pairs, training stopped 08:30):** dec val band AUC 0.9547 (stage-2 0.9651; e5-base
+  round 3 0.9567). Added to the avg_ce4 CE ensemble on val (all 95.9k val S1): 0.990098 -> 0.990125 / 0.990162 / 0.990154 /
+  0.990148 for Qwen weight 0.5 / 1 / 2 / 3 - at most +0.00006, below the +0.0001 bar; not used. Its test cut covers only 6%
+  of the LB-confirmed France suffix matches (their blend is ~0.007, the cut starts at 0.05), so it cannot be checked on
+  the France classes either.
+- **Final candidate: `avg_ce4_v3`** (US/India = avg_ce4, France = v3 rules).
+
+## After 0.98809: remaining-loss audit and the native-script route (27 Sep, 09:00-11:00 UTC)
+- Where US/India lose F0.5 (val, 96,116 S1 with candidates; 0.99010): 73% of the loss is missed matches on S1 that have other
+  matches (9,751 FN), 19% is 179 non-singleton S1 predicted empty; FPs are small (254 + 13 on singletons). Val S1 without any
+  candidate (half of the singletons) are not in the val file, so all-S1 val is ~0.9904; US/India test predicted k-distributions
+  equal val (US 3.38 vs 3.37, India 3.35 vs 3.35), so France is at about 0.975 on the LB (~4,000 S1-units below US level).
+- Missed val records: empty-address in candidates 5,366, not in candidates 1,618; other not in candidates 1,837 (native
+  script 618, invented single-token names 608, websites 156, other 456); other in candidates 1,191.
+- IDs carry no generation order (Spearman S1 id vs matched id 0.0008 / -0.0002).
+- Empty-address records: 97.7% are true matches in train and the test rate per S1 equals train (US 0.167), but only 51-59% are
+  claimed in test (France 51%) and ~55% in val: the rest are ties. A name-only assignment model over the full train S1 pool
+  (char-trigram kNN + rapidfuzz + margins, 2-fold) is 98.8% precise on 44% of all empty-address records, but its picks among
+  the records the pipeline leaves unclaimed are only 52-70% precise (val -0.00003..-0.001); none are outside the candidate
+  lists. Legal-form tie-breaker for same-name ties (unique canonical legal form, nsn 2-3): 95 val adds at 79%, +0.00003. Not used.
+- France class census against US/India true rates: the France noise profile differs (house numbers rarely change, 13x more
+  acronym names, which are 99.5% matches in US/India); unclaimed France same-name records at another street are generic
+  "City + Category" names on different streets; claimed pure adds / swaps are suffix-list words, typos and English
+  organisation words (matches in US/India). Unclaimed below-threshold classes are 35-62% precise on US/India val. No rule.
+- **Native-script route (`scripts/native_route.py`, India).** Transliterate with the pipeline normaliser, top S1 of the country
+  by name (char 3-gram TF-IDF, 0.6) + address (word TF-IDF, 0.4): the owner is in the top 20 for 98.1% of owned train records
+  and first for 96.0%. A classifier on the top-5 pairs (train labels, 2-fold) is 99.8% precise at q >= 0.9 on all records.
+  Val (exact, India val S1): adds for unclaimed records at q >= 0.9 are 91.9% precise overall, but pairs the pipeline had
+  already scored and rejected are only 15% right; restricted to out-of-candidate pairs: 346 adds, 97.7% precise, val F0.5
+  +0.00033 (India 0.98926 -> 0.99009; q >= 0.8: +0.00034, q >= 0.95: +0.00031). Test: 8,480 out-of-candidate adds at
+  q >= 0.9 (1.05% of India S1 vs 0.9% on val; test has 26% more native records per S1 than train, i.e. more decoys).
+  Expected LB about +0.0003-0.0004.
+- `avg_ce4_v4` = `avg_ce4_v3` + the 8,480 native adds (`--extra_pairs`, also added to the candidate file); the v3 part
+  reproduces with 0 pair differences; validator PASS with --check-ids.
+- **General out-of-candidate route (AWS `yoddhas-route-oocand2-0927-1123`, ml.r5.24xlarge; the first run was stopped: the
+  uncapped kNN over 9.2M records would not finish in 3 h, the 96 vCPUs ran like ~8-9 local cores on this sparse product).**
+  Same method for non-native, non-empty-address US/India records (name trigrams capped at df 2%: 2.6x faster, owner in top 5
+  98.8%); train side = 600k random records + records near validation S1 (reverse kNN) + their true matches, 2-fold classifier.
+  Validation (out-of-candidate pairs, unclaimed records): q >= 0.9 493 adds, 53% precise (US 35%, India 70%), -0.00034;
+  q >= 0.98 218 adds, 78%, +0.00002. Blocking already finds the clean Latin-script matches; what is left outside the candidate
+  lists is mostly decoys (invented-name "same building" decoys, branches). Not used; no France route adds either.
+- Other checks: unclaimed empty-address records with a unique same-name S1 are 38% precise on val (-0.0003); E-rule-like adds
+  (same core, stage-2 p >= 0.87) 76% on val (E2 is neutral); invented-name records in the candidate lists are 80% true and the
+  model already claims ~95% of the true ones (decoys differ by unit/suite); main CE ensemble instead of the French CE for France:
+  +4,224 / -2,185 France pairs (adds same-name records on other streets, drops acronyms and typos): not used.
+- **France probe `avg_ce4_v5_frprobe`** = v4 + France threshold 0.85 + 819 same-name / kept-qualifier records with the house
+  number up 1-20 (US 81%, India 99% true for that signature; blend >= 0.5) + 371 empty-address same-name records with stage-2
+  p >= 0.97 and a clear best S1: France +2,135 / -1 vs v4, US/India identical; validator PASS. Expected effect about +-0.00005.
+- **Kavya's `kavyachetwani/ber-final-merge-v1`** (v2h + 11,577 US/India adds, built on a proxy blend dec + base2, val 0.98942):
+  R3 phonetic route (Double Metaphone + house number, 8,015 India adds on records v2h leaves unclaimed) and family completion
+  (3,562 in-candidate pairs rescored with CE evidence against the S1's accepted records; its own gate failed). Against v4:
+  4,686 R3 pairs are identical to the native-route adds (same record, same S1; 11 records differ). R3's other 3,319 adds on
+  records v4 leaves unclaimed: 2,023 native-script records where the native classifier prefers another same-name S1 and gives
+  the R3 pair q ~0.02 (generic names such as "Balaji Finance" with only "H.NO 6, DELHI" as address; the R3 S1 carries the
+  record's legal form in 1,406 of 1,630 disputed cases vs 969 for the classifier's pick, i.e. roughly 80% precise, worth about
+  +0.00002) and 1,296 Latin-script records. The family adds are pairs the submitted blend scored and rejected (US: 548 with
+  blend 0.2-0.5, 145 with 0.05-0.2); the stronger blend already claims half of what family completion adds on the proxy (test
+  0.24% of S1 vs val 0.45%), and rejected in-candidate pairs are the least precise class on our val. Not merged.
+- **Kavya's final_merge_v2** (v1 + R6: same-name compact key with a shared house number or city word, 6,818 adds, 99.5%
+  India; her val 284 adds at 88.7%, +0.00017 on the proxy): 2,966 R6 pairs are identical to v4's native adds; 2,230 native
+  records v4 leaves unclaimed (native classifier agrees on the S1 for 1,021 with median q 0.65, prefers another S1 for 1,209)
+  and 1,611 Latin-script records (generic Indian names whose record carries the S1's unit number under the "Block X / Door No"
+  noise, websites). From the two validations (her R3+R6: 603 val adds at ~93%; native route: 346 at 97.7%) her extra adds are
+  roughly 87% precise, about +0.0001 LB; not validated on our blend.
+- **`avg_ce4_v6_kv`** = v4 + her 7,156 R3/R6 adds on records v4 leaves unclaimed (outside the candidate lists; family
+  completion not included). **`avg_ce4_v7_kv_fr`** = v6 + the v5 France bundle. Both validator PASS.
