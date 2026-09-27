@@ -1010,7 +1010,7 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   - **`avg_ce4_v15b`** = v15 + the 288 safe 0.85 adds (`scripts/france_thr_safe.py`): no-address records with a name unique
     to that S1 (68) and S1s alone at their address (220). 5,838,236 matches, validator PASS. Expected about +0.00001-0.00002.
 
-## France gap audit in a fresh container; shared addresses: sub-numbers and the city key; v16 (27 Sep, 15:35-17:20 UTC)
+## France gap audit in a fresh container; shared addresses: sub-numbers and the city key; v16 (27 Sep, 15:35-16:00 UTC)
 - **Where France is short.** Predicted matches per S1 (v15b): France 3.315, US 3.385, India 3.375 (train truth 3.46 in both
   countries, whatever the S1's name-twin status). By the number of S1s sharing the S1's core name (nsn): France 3.379 / 3.321 /
   3.242 for nsn 1 / 2 / 3+, US 3.435 / 3.349 / 3.290. France has 43% of its S1s in nsn >= 3 (US 28%): generic "City + Category"
@@ -1038,3 +1038,18 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
 - **`avg_ce4_v16`** = v15b + `artifacts/v16/fr_unit_adds.parquet` + `artifacts/v16/fr_acr_city_shared_adds.parquet` (the same
   `--extra_pairs` semantics: unclaimed records only, one S1 per record, earlier file wins): +968 (France 958, India 10),
   5,839,204 matches, validator PASS with --check-ids. Expected about +0.00003 over v15b (~970 adds at ~97-99%).
+- **Also checked after v16 (no change):**
+  - Unclaimed empty-address records whose core name belongs to exactly one S1 (full-train uniqueness): train owner = that S1
+    96.7% (US) / 98.1% (India), but the unclaimed ones on val are 42% precise (blend 0.7-0.8: 73-77%). The model's rejections
+    are informed. France has 552 such records; not added.
+  - Typos at a unique France address, names equal after fuzzy word alignment (train, unique S1 address, no word added or dropped):
+    word typo US 97.5% / India 94.5%, a substituted letter in a short token 99.9% / 99.3%, a letter DELETED from a short token
+    93% / 74%, a letter INSERTED into a short token (acronym "OVN" -> "OVNX") only 71.5% / 33% (a decoy operation). France claims
+    98.4% / 99.2% / 72.6% / 37.7% of those classes, i.e. at the train truth rates. The France "suffix + typo" records ("KU Club
+    SAS" -> "KCU SAS Groupe") are nearly all acronym-letter insertions: decoys.
+  - One-letter substitution in a short token at the same address: train 94% / 88%; 127 unclaimed in France (~+0.000003).
+  - Claimed France pairs with the same house number but a street whose name words all differ (<60): 222 (about a third are
+    address-component-order false alarms). Train: same name + number with a different street is 0.5-4% true when the city also
+    differs; same-city cases are rare in US/India. Removing ~150 would be worth ~+0.00001; not done.
+  - Records at shared France addresses with exactly one same-name tenant: 99.999% claimed. Tail of k: train truth never exceeds
+    11 matches per S1, and neither does any test prediction.
