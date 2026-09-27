@@ -888,3 +888,13 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   France rule (5,135 pairs on ~5,020 S1; 1,750 of those S1 had k <= 2). Expected about +0.0002-0.00025.
 - **`avg_ce4_v10s`** = v6 + Qwen + tie-breaker + France invented-name adds; **`avg_ce4_v10fr`** = v10s + France bundle. No family
   completion in either (357 of its pairs are claimed by the Qwen-augmented decoder itself). Both validator PASS.
+- **LB: `avg_ce4_v10s` = 0.989412** (v6 0.989052, +0.00036; Qwen + tie-breaker ~+0.00005 by val, so the France invented-name
+  rule gave ~+0.0003, more than estimated).
+- **Name-type census at unique S1 addresses** (train match rate vs test claim rate US / India / France, after v10s): same 99.6%
+  (99.8 / 96.7 / 100), drop 99.9%, web 95.7% (97 / 94 / 97), suffix 99.3% (99 / 96 / 98), invented 93.6% (93 / 92 / 94 after the
+  rule), **acronym 100% (99.8 / 99.8 / 83.4)**; swap1 91% and multi 60% are France's category-swap decoys (47% / 10%), excluded.
+  France acronyms: 1,730 unclaimed, 1,727 in the same city, only 228 ever candidates (blend median 0.78); e.g. "CG" for
+  "Chasseurs Groupe SARL" at the same street and number.
+- **`avg_ce4_v11`** = v10s + 1,727 France acronym adds; validator PASS, no family completion. Expected about +0.0001.
+  `scripts/france_name_replaced.py` reproduces both France rules; the exact pairs used are in `artifacts/v11/` with the build
+  command.
