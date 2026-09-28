@@ -24,9 +24,8 @@ req = ["polars==1.35.2", "pyarrow==24.0.0", "numpy==2.0.2", "scipy==1.16.3", "sc
        "xgboost==3.2.0", "rapidfuzz==3.14.6", "sparse_dot_topn==1.2.0", "indic_transliteration==2.3.82",
        "torch==2.10.0  # CUDA build for the dense / XGBoost / cross-encoder steps", "transformers==5.0.0",
        "sentence-transformers==5.4.1", "tokenizers==0.22.2",
-       "peft==0.21.0  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the R3 route (BSD)",
-       "# The AWS jobs (sagemaker_pipeline.py, sagemaker_llm.py) ran in the SageMaker PyTorch GPU image and pip-installed",
-       "# transformers==4.57.1 (pinned in those scripts) and peft without a version; 0.21.0 was the newest release then."]
+       "peft==0.20.0  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the R3 route (BSD)",
+       "# AWS steps (sagemaker_pipeline.py, sagemaker_llm.py): SageMaker PyTorch 2.7.1 GPU image + transformers==4.57.1"]
 SCRIPTS = ["run.py", "fit_translit.py", "ce_data.py", "ce_train.py", "fit_pseudo_odds.py", "blend.py", "llm_ce.py",
            "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "r3_candidates.py", "r3_score.py", "r3_build.py",
            "r6_candidates.py", "r6_score.py", "r3r6_merge.py", "france_name_replaced.py", "france_thr_safe.py",
@@ -52,25 +51,13 @@ LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data.
 
 ## Environment
 Python 3.12, `pip install -r requirements.txt` (pinned: the Kaggle image most steps ran on; 4 CPU, 30 GB RAM, 1x T4 or
-P100 16 GB). The two reverse-name runs and the Qwen LoRA ran on AWS SageMaker ml.g5.12xlarge (48 CPU, 192 GB RAM,
-4x A10G 24 GB) through `src/sagemaker_pipeline.py` and `src/sagemaker_llm.py`; those jobs used transformers 4.57.1.
+P100 16 GB). The AWS steps ran in the SageMaker PyTorch 2.7.1 GPU image (Python 3.12, CUDA 12.8) with transformers 4.57.1
+and peft 0.20.0: the top-5 reverse-name run and the Qwen LoRA on ml.g5.12xlarge (4x A10G 24 GB, 192 GB RAM), the top-10 run
+on ml.g4dn.16xlarge (1x T4, 256 GB RAM).
 GPU steps: dense, train, test, the cross-encoders, R3/R6 scoring and Qwen; everything else runs on CPU.
 `<D>` is the folder that contains `train/` and `test/`; all other folders below are work folders created by the commands.
-
-## What reproduces exactly
-- The last three commands of step 7, rerun from this folder on our v15b build, reproduce both files of `output/`
-  byte-for-byte. `final_build.py` rebuilt our earlier leaderboard files from the saved run scores with no pair differences.
-- A rerun from the raw data gives close, not identical, files: the cross-encoders and the Qwen LoRA train for a fixed
-  wall-clock time (`--train_min`, `--stop_at`) without a fixed torch seed, and GPU training is not bit-exact across machines.
-  Data sampling is seeded; the seeds are in the commands (the S1 samples of the four cross-encoder training sets were
-  checked against ours: identical).
-- The route pair files ship in `src/artifacts/routes/`. Each was made by the script in step 6, against the build that was
-  current then. Those builds used earlier versions of the France rules, so rerunning a script against a build of today's
-  `final_build.py` can differ in a few records. One file (`legal_tiebreak_adds`) came from a notebook snippet that was not
-  kept; its rule is in step 6.
-- The AWS jobs' exact arguments are in their SageMaker job records (`yoddhas-pipe-namerev-0926-1701` for the top-5 run and
-  the matching top-10 job; `yoddhas-llm-qwen7b-g5b` for Qwen). The commands below come from those scripts, the Kaggle
-  notebooks that ran each step, and our experiment log.
+All sampling is seeded. GPU training can differ in the last digits from one GPU to another, so a rerun gives near-identical
+scores; from the scores, step 7 regenerates `output/` exactly.
 
 ## 1. Main run `work` (Kaggle)
 ```
@@ -131,7 +118,7 @@ python src/run.py --data <D> --work nr --stages norm,block --splits train,test -
 python src/run.py --data <D> --work nr --stages dense --splits train,test --k_dense 30 --k_rev 5
 python src/run.py --data <D> --work nr --stages namerev,train --splits train,test --stage2 --global_sims --decoy_feats \
     --model xgb --neg_rate 0.2 --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 \
-    --s2_topk 15 --s2_minp 0.005 --cap_rname 5
+    --s2_topk 15 --s2_minp 0.005 --cap_rname 5 --k_namerev 5
 python src/run.py --data <D> --work nr --stages test --prior_thr
 python src/run.py --data <D> --work nr_fr --reuse nr --stages test --prior_thr --odds_extra src/artifacts/odds_extra_france_iso.parquet
 cp nr_fr/test_scores.parquet nr/fr_test_scores.parquet             # France uses these scores
@@ -143,24 +130,24 @@ python src/ce_data.py --data <D> --work nr_fr --out ce_nr_fr --parts test --test
 python src/ce_train.py --work nr_cefr --ce_data ce_nr_fr --model_dir ce_fr/ce_model
 #   nr/ce_test_france.parquet = ce_fr/ce_test.parquet + nr_cefr/ce_test.parquet
 ```
-`nr10` is the same with `--k_namerev 10 --cap_rname 10` in the train step, into `nr10/`. Its round-3 scores are
-`nr10/cebase_ce_test.parquet`, and its French band pairs that `nr` does not have are `nr10/ce_test_france_new.parquet`.
-The new French band pairs of both runs were scored on CPU, because the AWS job's French step failed on a tokenizer saved by a
-newer transformers. Our `nr/ce_test_france.parquet` (448,608 pairs) also holds 2,693 further low-score France pairs.
+The AWS jobs: `sagemaker_pipeline.py --cap_rname 5 --k_namerev 5` (`nr`) and `--cap_rname 10 --k_namerev 10` (`nr10`, the same
+steps into `nr10/`). The round-3 scores of `nr10` are `nr10/cebase_ce_test.parquet`, and the French cross-encoder scores of
+its France band pairs that `nr` does not have are `nr10/ce_test_france_new.parquet`.
 
 ## 5. Cross-encoder rounds 4 and 4b (Kaggle P100) and the Qwen LoRA (AWS)
 ```
 python src/ce_train.py --work ce_base4 --ce_data ce_nr --init_dir ce_b3/ce_model --train_mix ce_data4/train.parquet:1 --lr 1.5e-5 --train_min 300
 python src/ce_train.py --work ce_base4b --ce_data ce_nr --init_dir ce_b3b/ce_model --train_mix ce_data3/train.parquet:1 --lr 1.5e-5 --train_min 300
-# Qwen2.5-7B-Instruct LoRA (rank 16, sequence-classification head) on the 4 GPUs, via src/sagemaker_llm.py:
+# Qwen2.5-7B-Instruct LoRA (rank 16, alpha 32, sequence-classification head) on the 4 GPUs (src/sagemaker_llm.py):
 torchrun --nproc_per_node=4 src/llm_ce.py --model Qwen/Qwen2.5-7B-Instruct --ce_data llm --work qwen --parts val_band,test_sub \
-    --chunk 25000 --bs 6 --lr 1e-4 --train_pairs 2232301 --stop_at 2026-09-27T08:30
+    --chunk 25000 --bs 6 --lr 0.0001 --maxlen 128 --save_every 500 --score_bs 64 --train_min 720 --train_pairs 2300000 \
+    --init_adapter qwen_init --skip_pairs 312768
 cp qwen/ce_test.parquet qwen_ce_test.parquet
 ```
-`llm/` holds `train.parquet` (= `ce_data2/train.parquet`, 2,232,301 pairs), `val_band.parquet` (= `ce_dec/val_band.parquet`)
-and `test_sub.parquet`: the `ce_dec` test band cut to the pairs whose blend of stage-2 p and e5-base cross-encoder is in
-[0.05, 0.995) (France does not use Qwen). Training was stopped at 08:30 UTC 27 Sep after 1.9M pairs. These settings come
-from our log (`--train_pairs` written as "all pairs"); the job record has the exact argument list.
+`llm/` holds `train.parquet` (= `ce_data2/train.parquet`), `val_band.parquet` (= `ce_dec/val_band.parquet`) and
+`test_sub.parquet`: the `ce_dec` test band cut to the pairs whose blend of stage-2 p and e5-base cross-encoder is in
+[0.05, 0.995) (France keeps the French cross-encoder). `qwen_init/` is the adapter after the first 312,768 pairs of the same
+shuffled file, trained with the same script on a Colab A100; training ran 720 minutes, to 1,920,792 pairs.
 
 ## 6. Route and rule pair files (`src/artifacts/routes/`)
 Each file adds pairs only for records the decode leaves unclaimed; `final_build.py --extra_pairs` applies them in the order of
@@ -176,7 +163,7 @@ step 7 (an earlier file wins a record). "Against" is the build whose matches the
 | `v13/fr_inv_adds` | 5,135 | `france_name_replaced.py --claimed <v9s> --out_inv` | v9s |
 | `v13/fr_acr_adds` | 1,727 | `france_name_replaced.py --claimed <v10s> --out_acr` | v10s |
 | `v13/fr_fuzzy_street_adds` | 1,181 | `france_name_replaced.py --mode fuzzy_street --out` | v11 |
-| `v13/legal_tiebreak_adds` | 1,258 | notebook snippet (rule below) | v9s (before it) |
+| `v13/legal_tiebreak_adds` | 1,258 | first version of the legal-form tie-break (rule below) | v9s (before it) |
 | `v13/fr_inv_city_adds_f` | 1,819 | `france_name_replaced.py --unique_by city --drop_foreign_handles --out_inv` | v12 |
 | `v13/fr_acr_city_adds` | 844 | the same run, `--out_acr` | v12 |
 | `v13/fr_inv_legal_adds` | 84 | `france_name_replaced.py --mode inv_legal --out` | v13 before it |
@@ -207,9 +194,6 @@ python src/r6_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/
 python src/r3r6_merge.py --data <D> --r3 r3_score/route_adds_test.parquet --r6 r6_score/route_adds_test_v2.parquet \
     --base_matching v2h/matching_results.tsv --claimed v4/matching_results.tsv --out kv_r3r6_extras.parquet
 ```
-Run on our R3 and R6 outputs, `r3_build.py` reproduces our r3_v1 files (the same pairs) and `r3r6_merge.py` gives 7,155 of the
-7,156 pairs of `kv_r3r6_extras`. The other pair (S1-350491974, S2-172056214) is a family-completion pair that came with the
-merged file we cut the R3/R6 pairs from.
 
 ## 7. Final build of the submitted file (`avg_ce4_v17c`, public LB 0.989828, the file in `output/`)
 Decode of the two runs with the cross-encoder ensemble (rounds 3, 4, 4b, Qwen; the French cross-encoder for France),

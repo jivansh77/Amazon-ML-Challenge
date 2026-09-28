@@ -1113,9 +1113,15 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
     match), not of the French-words re-score as the old README said. `nr/ce_test_france.parquet` = those scores + 56,129
     newly scored France pairs (53,436 of them the `nr_fr` band [0.02, 0.998) not scored before).
   - The top-5 run needs `--cap_rname 5` (the route is off by default); the old README's run commands lacked it.
-  - Qwen (AWS, `yoddhas-llm-qwen7b-g5b`): settings from this log (lr 1e-4, 4 x bs 6, round-2 pairs, stopped 08:30 UTC).
-    peft is pinned to 0.21.0, the newest release (15 Sep 2026) when the job pip-installed it unpinned. The AWS tools were not
-    available in this session, so the jobs' own argument lists were not read.
+  - AWS job records (read later the same day): `yoddhas-pipe-namerev-0926-1701` = `sagemaker_pipeline.py --cap_rname 5
+    --k_namerev 5` on ml.g5.12xlarge, `yoddhas-pipe-namerev10-0926-1913` = `--cap_rname 10 --k_namerev 10` on
+    ml.g4dn.16xlarge (both end "Failed" at the last step, the French cross-encoder: tokenizer saved by transformers 5.0);
+    image pytorch-training 2.7.1-gpu-py312-cu128. Qwen `yoddhas-llm-qwen7b-g5b-0926-2024` (ml.g5.12xlarge), from its log:
+    `torchrun --nproc_per_node=4 llm_ce.py --model Qwen/Qwen2.5-7B-Instruct --ce_data llm --parts val_band,test_sub --chunk 25000
+    --bs 6 --lr 0.0001 --maxlen 128 --save_every 500 --score_bs 64 --train_min 720 --train_pairs 2300000 --init_adapter <Colab
+    adapter> --skip_pairs 312768`; 1,920,792 pairs seen at the end; data channel = ce_data2 train + ce_dec val band + test_sub.
+    Both adapters record peft 0.20.0 (requirements.txt pins it). `yoddhas-llm-qwen7b-g6e-all-0926-2053` is still pending for
+    capacity (not needed).
 - **Kavya's R3/R6 kernels as scripts (28 Sep).** `rt-miss` / `rt-miss2-tr` + `rt-miss2-te` / `rt-score` / `rt-build` / `rt-score2`
   are now `scripts/r3_candidates.py`, `r6_candidates.py --split`, `r3_score.py`, `r3_build.py`, `r6_score.py`: inputs as
   arguments instead of `/kaggle/input` globs, `--out` instead of `/kaggle/working`, no runtime pip installs; the logic is
