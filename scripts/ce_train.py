@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data"); ap.add_argument("--work", required=True)
-ap.add_argument("--ce_data", default="/kaggle/input/**/ber-ce-data*")
+ap.add_argument("--ce_data", required=True, help="dir with train / val_band / test_band parquet files (glob ok)")
 ap.add_argument("--model_dir", default=None, help="score only, with an already fine-tuned model")
 ap.add_argument("--init_dir", default=None, help="continue fine-tuning from this model (glob ok)")
 ap.add_argument("--train_mix", default="train.parquet:1",

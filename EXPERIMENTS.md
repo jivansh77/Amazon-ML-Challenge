@@ -1104,3 +1104,31 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
 
   Rerunning the README's append_routes -> legal_tie -> append_routes steps from the extracted zip on the v15b build reproduces
   both output files byte-for-byte; the regenerated tie-break file holds the same 735 pairs in another row order. Validator PASS.
+- **Package: exact end-to-end README (28 Sep).** Every step of the final build now has its command in the zip's README,
+  recovered from the Kaggle notebooks that ran it, `sagemaker_pipeline.py` and this log:
+  - Cross-encoder training sets: the S1 samples were matched against our files (100% of S1): `ce_data` = seed 0 drawn outside
+    the validation S1 of the earlier `big` run (`--neg_rate 0.25 --drop_s1 0.19`), `ce_data2` seed 5, `ce_data3` seed 9,
+    `ce_data4` seed 13 (each excluding the earlier sets, drawn from `work`). Rounds 3/3b/4/4b: lr 1.5e-5, 170/150/300/300 min.
+  - The French cross-encoder's band is the France band [0.003, 0.9995) of the plain `work` test scores (all 392,479 pairs
+    match), not of the French-words re-score as the old README said. `nr/ce_test_france.parquet` = those scores + 56,129
+    newly scored France pairs (53,436 of them the `nr_fr` band [0.02, 0.998) not scored before).
+  - The top-5 run needs `--cap_rname 5` (the route is off by default); the old README's run commands lacked it.
+  - Qwen (AWS, `yoddhas-llm-qwen7b-g5b`): settings from this log (lr 1e-4, 4 x bs 6, round-2 pairs, stopped 08:30 UTC).
+    peft is pinned to 0.21.0, the newest release (15 Sep 2026) when the job pip-installed it unpinned. The AWS tools were not
+    available in this session, so the jobs' own argument lists were not read.
+- **Kavya's R3/R6 kernels as scripts (28 Sep).** `rt-miss` / `rt-miss2-tr` + `rt-miss2-te` / `rt-score` / `rt-build` / `rt-score2`
+  are now `scripts/r3_candidates.py`, `r6_candidates.py --split`, `r3_score.py`, `r3_build.py`, `r6_score.py`: inputs as
+  arguments instead of `/kaggle/input` globs, `--out` instead of `/kaggle/working`, no runtime pip installs; the logic is
+  line-for-line hers (the originals stay in `third_party/kavya_r3r6/`). Her merge kernel (final-merge) is not accessible,
+  so `scripts/r3r6_merge.py` implements it for R3 + R6 (R3 prob >= 0.70, R6 >= 0.55, records unclaimed in the base v2h,
+  one S1 per record by probability, then records unclaimed in v4). Checks on her real outputs:
+  - `r3_build.py` on her rt-score output reproduces her r3_v1 files (same pairs; 573 rows list the ids in another order, as
+    her own group_by does) and the same metrics (8,015 adds on 6,835 S1, validator PASS).
+  - `r3r6_merge.py` gives R3 8,015 / R6 6,871 / merged 14,826 (her report: R3 8,008 + R6 6,818 = 14,826 after exclusivity
+    with family completion) and 7,155 of the 7,156 pairs of `kv_r3r6_extras`. The 7,156th (S1-350491974, S2-172056214) is a
+    family-completion pair: the shipped file = every pair final_merge_v2 adds outside the v2 candidate lists, on records v4
+    leaves unclaimed (7,156 exactly; = v6_kv - v4), and one family pair lies outside those lists.
+- **`legal_tiebreak_adds.parquet` (v9) has no script.** It was made by a notebook snippet that was never committed. The file
+  follows the rule "address-less record, word-set core name shared by 2-3 S1, legal form on exactly one of them" (every pair
+  has the same word-set key and nsn 2-3), but no variant tried reproduces it exactly (closest: the pipeline's name_legal
+  against v6, 35 missed / 167 extra). The README says so; `legal_tie.py` is the refined rule.
