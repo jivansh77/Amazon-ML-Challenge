@@ -1093,3 +1093,14 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   kernels (`third_party/kavya_r3r6/`: rt-miss, rt-score, rt-build, rt-miss2-tr, rt-miss2-te, rt-score2, plus sh-hn; they use the
   internet only to pip-install metaphone / sparse_dot_topn / rapidfuzz, inputs are the challenge data and our own runs).
   `append_routes.py` on the v15b build reproduces the v17 matching file byte-for-byte (candidate file: same 7,670,616 pairs).
+- **Final submission (28 Sep).** v17c was uploaded after all and is the final file: public LB **0.989828**. The package's
+  `output/` holds v17c (5,839,939 matches, 7,670,609 candidate pairs), and the README and Documentation.md document v17c.
+- **Package clean-up (28 Sep).** The code folder ships only what the submitted build reads:
+  - the six R3/R6 kernels as `src/routes_r3_r6/`, without HANDOFF.md, the Kaggle kernel-metadata files or the sh-hn France
+    kernel (its rules live in `final_build.py`);
+  - `odds_extra_france_iso.parquet` only;
+  - the 14 route files named in the final_build / append_routes commands, without the duplicate v11/v13 copies, the v14
+    first-match files, the v17 / v17b tie-break files or the route READMEs.
+
+  Rerunning the README's append_routes -> legal_tie -> append_routes steps from the extracted zip on the v15b build reproduces
+  both output files byte-for-byte; the regenerated tie-break file holds the same 735 pairs in another row order. Validator PASS.

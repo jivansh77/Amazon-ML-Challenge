@@ -27,7 +27,15 @@ req = ["polars==1.35.2", "pyarrow==24.0.0", "numpy==2.0.2", "scipy==1.16.3", "sc
 SCRIPTS = ["run.py", "fit_translit.py", "ce_data.py", "ce_train.py", "fit_pseudo_odds.py", "blend.py", "llm_ce.py",
            "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "final_build.py", "france_name_replaced.py",
            "france_thr_safe.py", "france_shared_addr.py", "legal_tie.py", "append_routes.py"]
-ROUTES = ["v11", "v13", "v14", "v15", "v16", "v17"]   # route / rule pair files used by the submitted build
+# route / rule pair files the submitted build reads (the --extra_pairs of final_build.py and the append_routes.py steps)
+ROUTES = {"v11": ["native_adds_q90", "kv_r3r6_extras"],
+          "v13": ["fr_inv_adds", "fr_acr_adds", "fr_fuzzy_street_adds", "legal_tiebreak_adds", "fr_inv_city_adds_f",
+                  "fr_acr_city_adds", "fr_inv_legal_adds"],
+          "v15": ["fr_acr_shared_adds", "fr_thr85_safe_adds"],
+          "v16": ["fr_unit_adds", "fr_acr_city_shared_adds"],
+          "v17": ["legal_tie_adds_v17c"]}
+ODDS = ["odds_extra_france_iso.parquet"]   # calibrated French decoy words used by the final runs
+R3R6 = ["rt-miss.py", "rt-score.py", "rt-build.py", "rt-miss2-tr.py", "rt-miss2-te.py", "rt-score2.py"]   # R3 / R6 route scripts
 
 readme = """# Business Entity Resolution (team Yoddhas)
 
@@ -35,7 +43,8 @@ Pipeline: normalise -> block (word TF-IDF + multilingual-e5 dense retrieval, for
 -> stage-1 XGBoost (also the learned candidate filter: top 15, p >= 0.005 -> ~4.2 candidates per S1)
 -> stage-2 XGBoost -> multilingual-e5 cross-encoder on the uncertain band -> logit blend
 -> exclusivity + per-country prior-corrected thresholds.
-Models: XGBoost (Apache-2.0), intfloat/multilingual-e5-small (MIT, 118M parameters). No external data.
+Models: XGBoost (Apache-2.0), intfloat/multilingual-e5-small and -base (MIT, 118M / 278M parameters) and, in the final build,
+a Qwen2.5-7B-Instruct LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data.
 
 ## Environment
 Python 3.12, `pip install -r requirements.txt`. Developed on Kaggle (4 CPU, 30 GB RAM, 1x T4 16 GB).
@@ -102,7 +111,7 @@ and route/rule pair files, and `src/append_routes.py` then appends two more rout
 ```
 python src/run.py --data <D> --work nr --stages norm,block --splits train,test --routes tok --tok_max_df 0.01 --indic src/artifacts/indic_dict.json
 python src/run.py --data <D> --work nr --stages dense --splits train,test --k_dense 30 --k_rev 5
-python src/run.py --data <D> --work nr --stages namerev,train --splits train,test --stage2 --global_sims --decoy_feats --model xgb \
+python src/run.py --data <D> --work nr --stages namerev,train --splits train,test --stage2 --global_sims --decoy_feats --model xgb \\
     --neg_rate 0.2 --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 --s2_topk 15 --s2_minp 0.005
 python src/run.py --data <D> --work nr --stages test --prior_thr
 python src/run.py --data <D> --work nr_fr --reuse nr --stages test --prior_thr --odds_extra src/artifacts/odds_extra_france_iso.parquet
@@ -114,22 +123,23 @@ cp nr_fr/test_scores.parquet nr/fr_test_scores.parquet          # France is scor
    and the French-adapted e5-small cross-encoder for France.
 3. **Route / rule pair files** (in `src/artifacts/routes/`; each adds pairs only for records the decode leaves unclaimed):
    - `v11/native_adds_q90.parquet`: India native-script route, `src/native_route.py`.
-   - `v11/kv_r3r6_extras.parquet`: R3 phonetic route and R6 same-name compact-key route (Kavya's Kaggle kernels, `src/kavya_r3r6/`:
-     R3 = `rt-miss.py` -> `rt-score.py` -> `rt-build.py`, R6 = `rt-miss2-tr.py` + `rt-miss2-te.py` -> `rt-score2.py`; see
-     `src/kavya_r3r6/HANDOFF.md`). The pairs are her final_merge_v2 R3/R6 adds on records our v4 decode left unclaimed.
+   - `v11/kv_r3r6_extras.parquet`: R3 phonetic route (Double Metaphone of the name + house number) and R6 same-name compact-key
+     route, written as Kaggle kernels (`src/routes_r3_r6/`): R3 = `rt-miss.py` -> `rt-score.py` -> `rt-build.py`,
+     R6 = `rt-miss2-tr.py` + `rt-miss2-te.py` -> `rt-score2.py`. Each kernel finds its inputs (the pipeline's normalised records,
+     candidates and scores, and the previous kernel's output) under `/kaggle/input` and writes to `/kaggle/working`; the pairs
+     are the R3/R6 adds on records the decode left unclaimed.
    - France name-replaced copies (`src/france_name_replaced.py`, modes default / `--unique_by city` / `fuzzy_street` / `inv_legal` /
      `acr_shared`), the France 0.85 safe subset (`src/france_thr_safe.py`), shared-address sub-number / acronym rules
      (`src/france_shared_addr.py`) and the legal-form tie-break for address-less same-name ties (`src/legal_tie.py`).
-   - `src/kavya_r3r6/sh-hn.py` is Kavya's original France house-number kernel; its rules (A2 suffix adds, HN_A drops) are ported
-     into `final_build.py`.
+   - The France generator rules (`--rules` below: suffix adds, house-number drops, ...) are implemented in `final_build.py`.
 4. **Decode** (US/India thresholds 0.8, France 0.87; France generator rules; first match for empty US/India S1):
 ```
 R=src/artifacts/routes
-python src/final_build.py --data <D> --runs nr,nr10 \
-  --ce nr/ce_test.parquet:1,nr10/cebase_ce_test.parquet:1,ce_base4/ce_test.parquet:1,ce_base4b/ce_test.parquet:1,qwen_ce_test.parquet:1 \
-  --ce_fr nr/ce_test_france.parquet,nr10/ce_test_france_new.parquet \
-  --rules A2P,A2F,A2N,HN_A,DP,E2,OOC,HNK --collapse_legal --first_min US=0.5,India=0.5 --first_skip_ea_ties \
-  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/kv_r3r6_extras.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \
+python src/final_build.py --data <D> --runs nr,nr10 \\
+  --ce nr/ce_test.parquet:1,nr10/cebase_ce_test.parquet:1,ce_base4/ce_test.parquet:1,ce_base4b/ce_test.parquet:1,qwen_ce_test.parquet:1 \\
+  --ce_fr nr/ce_test_france.parquet,nr10/ce_test_france_new.parquet \\
+  --rules A2P,A2F,A2N,HN_A,DP,E2,OOC,HNK --collapse_legal --first_min US=0.5,India=0.5 --first_skip_ea_ties \\
+  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/kv_r3r6_extras.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \\
   --out v15b                                                   # 5,838,236 matches
 BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v15b v16 $R/v16/fr_unit_adds.parquet,$R/v16/fr_acr_city_shared_adds.parquet
 python src/legal_tie.py --data <D> --claimed v16/pred.parquet --gate_run nr --out legal_tie_adds_v17c.parquet   # = $R/v17/legal_tie_adds_v17c.parquet (735 pairs)
@@ -164,14 +174,13 @@ with zipfile.ZipFile(a.out, "w", zipfile.ZIP_DEFLATED) as z:
     for f in SCRIPTS:
         z.writestr(f"{base}/src/{f}", fix(open(f"{root}/scripts/{f}").read()))
     z.write(f"{root}/artifacts/indic_dict.json", f"{base}/src/artifacts/indic_dict.json")
-    for f in sorted(os.listdir(f"{root}/artifacts")):
-        if f.endswith(".parquet"):
-            z.write(f"{root}/artifacts/{f}", f"{base}/src/artifacts/{f}")
-    for v in ROUTES:
-        for f in sorted(os.listdir(f"{root}/artifacts/{v}")):
-            z.write(f"{root}/artifacts/{v}/{f}", f"{base}/src/artifacts/routes/{v}/{f}")
-    for f in sorted(os.listdir(f"{root}/third_party/kavya_r3r6")):
-        z.write(f"{root}/third_party/kavya_r3r6/{f}", f"{base}/src/kavya_r3r6/{f}")
+    for f in ODDS:
+        z.write(f"{root}/artifacts/{f}", f"{base}/src/artifacts/{f}")
+    for v, names in ROUTES.items():
+        for f in names:
+            z.write(f"{root}/artifacts/{v}/{f}.parquet", f"{base}/src/artifacts/routes/{v}/{f}.parquet")
+    for f in R3R6:
+        z.write(f"{root}/third_party/kavya_r3r6/{f}", f"{base}/src/routes_r3_r6/{f}")
     z.writestr(f"{base}/README.md", readme)
     z.writestr(f"{base}/requirements.txt", "\n".join(req) + "\n")
     if a.output:
