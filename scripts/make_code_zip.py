@@ -86,7 +86,11 @@ Thresholds: `blend.py` prints a prior-shift estimate per country (validation mat
 divided by the test pairs per S1 in that band = the band's precision on test; keep bands above ~0.78).
 US/India use the validation optimum (0.8, which the estimate agrees with); France, which has no labels, uses 0.93,
 chosen with leaderboard probes (0.97 -> 0.93 improved it; lower bands fall below break-even precision).
-`candidate_pairs.tsv` is the exact set the stage-2 model (and the cross-encoder) score: the stage-1 filter's output.
+`candidate_pairs.tsv` is the exact set the matching stage runs on:
+- the stage-1 filter's output, which the stage-2 model and the cross-encoders score;
+- in the final build, the stage-1 output of both runs plus the pairs accepted by the targeted routes.
+
+That is 4.43 pairs per S1, 1.31× the final matches.
 
 ## Final build of the submitted file (`avg_ce4_v17c`, public LB 0.989828, the file in `output/`)
 Steps 1-6 above produce the model and cross-encoder scores. Step 7 (`blend.py`, one run, France 0.93) was our single-run decode

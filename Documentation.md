@@ -105,6 +105,23 @@ All blocking runs **within country**. Every step is vectorised and chunked; the 
 
 - **Candidate pairs generated:** **7,670,609 test pairs (4.43 per S1)**: the stage-1-filtered lists of the two runs plus the route pairs. This is the exact set that is scored, and it is what `candidate_pairs.tsv` contains. 46.9k S1 (2.7%) end up with no candidates.
 
+- **Candidate-set size.**
+  - 4.43 pairs per S1: median 4, 90th percentile 7, 99th percentile 11, maximum 20. By country: US 4.56, India 4.24, France 4.68.
+  - That is only **1.31× the 3.37 matches per S1** we finally output.
+  - The file has fewer pairs than there are S2/S3 records (0.77 per record).
+  - Against the 6.7 × 10¹² same-country pairs, the reduction ratio is **99.9999%**, at 98.9% pair completeness on validation.
+- **How the set is kept small.**
+  - The retrievers' raw union is ~34 pairs per S1. The stage-1 model, a light XGBoost on cheap similarity and rank features, keeps each S1's top 15 with p₁ ≥ 0.005. This removes ~88% of the pairs, and recall moves from 0.9848 to 0.9849.
+  - The targeted routes only propose records that no other retriever proposed, and a route pair enters the file only when it is accepted.
+- **What `candidate_pairs.tsv` contains.** Exactly the pairs the matching stage runs on, written by `final_build.py` / `append_routes.py`. Every matched pair is in it.
+  - The stage-1-filtered lists of the two runs, scored by the stage-2 XGBoost and the cross-encoders.
+  - The pairs accepted by the targeted routes, scored by their own classifiers or rules.
+- **Scalability.**
+  - Blocking runs per country and keeps only top-k lists, so memory is O(N·k).
+  - TF-IDF is a sparse matrix product with a 1% document-frequency cap: only pairs sharing a non-frequent token are ever compared (sparse_dot_topn keeps the top k per row). The reverse-name route does the same on character trigrams, for records without an address.
+  - The dense search is exact top-k by blocked GPU matrix products. At this size, train and test together take about 2 hours on one T4, encoding included.
+  - At billions of records the dense search would be replaced by an approximate nearest-neighbour index (e.g. FAISS IVF or HNSW) behind the same top-k interface. Nothing downstream changes.
+
 - **How we ensured true matches were not lost.** Recall was measured on the full training ground truth for every route and cut-off:
 
 | Candidates | Recall |

@@ -36,7 +36,17 @@ All blocking runs within country, on normalised text: accents stripped, OCR digi
    - R6: same-name compact key.
    - France address-keyed: invented names or acronyms at the house number + street + city of exactly one S1.
 
-Result: 7.67M candidate pairs (4.43 per S1), blocking recall 0.989, oracle macro F0.5 of the candidate set 0.9964. 2.7% of S1 have no candidates.
+Result:
+- **Size.** 7.67M candidate pairs, 4.43 per S1 (median 4, 99th percentile 11, maximum 20). That is only 1.31× the 3.37 matches per S1 in the final output, and fewer pairs than there are S2/S3 records (0.77 per record).
+- **Quality.** Blocking recall 0.989; the oracle macro F0.5 of the candidate set is 0.9964. 2.7% of S1 have no candidates.
+- **Reduction.** 99.9999% against the 6.7 × 10¹² same-country pairs.
+
+`candidate_pairs.tsv` is exactly what the matching stage runs on: the stage-1-filtered lists (scored by stage 2 and the cross-encoders) plus the accepted route pairs.
+
+**Scalability.**
+- Blocking runs per country and keeps only top-k lists, so memory is O(N·k).
+- TF-IDF compares only pairs that share a token held by fewer than 1% of records.
+- The exact dense top-k runs on one T4 at this size. At billions of records it would be swapped for an approximate nearest-neighbour index (FAISS IVF/HNSW) behind the same top-k interface.
 
 ## 3. Model architecture and feature engineering
 
