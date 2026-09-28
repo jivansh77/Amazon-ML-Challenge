@@ -10,6 +10,11 @@ Case B (France only, --case_b): the record's legal form is on none of the same-n
 France copies never swap the form, so the owner is that S1 (the noise added the form) unless the record belongs to another name.
 
   python scripts/legal_tie.py --data DS --claimed PRED.parquet --out legal_tie_adds.parquet
+  python scripts/legal_tie.py --data DS --claimed PRED.parquet --gate_run RUN --out legal_tie_adds_v17c.parquet   # submitted
+
+--gate_run (v17c, the submitted file): keep only pairs the stage-2 model scores p >= --min_p (RUN/test_scores.parquet for US/India,
+RUN/fr_test_scores.parquet for France). The rule only adds records the decode rejected; on validation those are 88.2% right at
+p >= 0.5 (51) and 33% below (6).
 """
 import argparse, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -20,6 +25,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True); ap.add_argument("--claimed", required=True); ap.add_argument("--out", required=True)
 ap.add_argument("--max_n0", default="France=2,US=1,India=1")
 ap.add_argument("--case_b", default="France", help="countries where a record whose legal form no same-name S1 has goes to the one S1 without a legal form (legal form added by the noise); France only: US 80%% / India 39%% in train, where copies swap legal forms")
+ap.add_argument("--gate_run", default="", help="run dir with test_scores.parquet / fr_test_scores.parquet: keep pairs with stage-2 p >= --min_p")
+ap.add_argument("--min_p", type=float, default=0.5)
 a = ap.parse_args()
 dd = find_dataset_dir(a.data)
 STOP = ["inc", "llc", "ltd", "corp", "corporation", "co", "company", "pvt", "private", "limited", "llp", "lp", "pc", "pa", "plc", "pllc",
@@ -54,5 +61,11 @@ j = j.with_columns(pl.col("eq").sum().over("m").alias("nL"), pl.col("none").sum(
 ja = j.filter(pl.col("eq") & (pl.col("nL") == 1) & (pl.col("n0") <= pl.col("country").replace_strict(max_n0, default=-1, return_dtype=pl.Int64)))
 jb = j.filter(pl.col("country").is_in([c for c in a.case_b.split(",") if c]) & (pl.col("nL") == 0) & pl.col("none") & (pl.col("n0") == 1))
 print("case A:", ja.group_by("country", "n0").len().sort("country", "n0").rows(), " case B:", jb.group_by("country").len().rows())
-out = pl.concat([ja.select("s1", "m"), jb.select("s1", "m")]).unique("m")
+out = pl.concat([ja.select("s1", "m"), jb.select("s1", "m")]).sort("s1", "m").unique("m", keep="first", maintain_order=True)
+if a.gate_run:
+    fr_ids = s1.filter(pl.col("country") == "France").select(pl.col("entity_id").alias("s1"))
+    sc = pl.concat([pl.read_parquet(f"{a.gate_run}/test_scores.parquet", columns=["s1", "m", "p"]).join(fr_ids, on="s1", how="anti"),
+                    pl.read_parquet(f"{a.gate_run}/fr_test_scores.parquet", columns=["s1", "m", "p"]).join(fr_ids, on="s1")])
+    out = out.join(sc.with_columns(pl.col("p").cast(pl.Float64)), on=["s1", "m"]).filter(pl.col("p") >= a.min_p).select("s1", "m")
+    print("after the stage-2 gate p >=", a.min_p, ":", out.height)
 out.write_parquet(a.out); print("legal-form tie-break adds:", out.height)
