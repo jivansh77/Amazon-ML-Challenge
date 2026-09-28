@@ -165,13 +165,13 @@ Text normalisation before blocking and matching:
 - **Two-stage XGBoost** (GPU, hist, lossguide, 255 leaves, eta 0.08, early stopping). Stage 1 trains on 45% of the training S1, stage 2 on a disjoint 45%, and 10% is held out for validation. Easy negatives are subsampled (rate 0.2) with compensating weights.
 - **Cross-encoder.**
   - `intfloat/multilingual-e5-base` (MIT, 278M parameters) fine-tuned as a pair classifier on "name | address" text.
-  - Trained in rounds on hard pairs of fresh training S1 that are never in the validation split. Each round is 160k S1 and 2.2M pairs (24% positives), 150–170 T4 minutes.
+  - Trained in rounds on hard pairs of fresh training S1 that are never in the validation split. Each round is 160k S1 and 2.2M pairs (24% positives), 150–300 GPU minutes (T4 / P100).
   - Each round starts from the previous checkpoint.
   - The first small-model version (e5-small) is kept for France, where it is adapted to French (see below).
   - It re-scores pairs in the uncertain band 0.02 ≤ p < 0.998 (19% of pairs).
   - It is blended on the logit scale with weight 0.6 for XGBoost (chosen on validation).
   - AUC on the uncertain band: XGBoost 0.965. The cross-encoder rises from 0.938 (e5-small) to 0.945 (e5-base) to 0.955 (e5-base, second round). Their blend reaches 0.975, so the two are complementary.
-- **Final cross-encoder ensemble.** The submitted blend averages, on the logit scale, three e5-base rounds (AUC on the band 0.957 / 0.954 / 0.955) and a **Qwen2.5-7B-Instruct LoRA pair classifier**. Qwen is Apache-2.0 and 7.6B parameters: LoRA rank 16 with a sequence-classification head, trained on 1.9M hard pairs on 4× A10G. Its band AUC is 0.955, and adding it to the ensemble gives +0.00006 on validation.
+- **Final cross-encoder ensemble.** The submitted blend averages, on the logit scale, three e5-base rounds (AUC on the band 0.957 / 0.954 / 0.955) and a **Qwen2.5-7B-Instruct LoRA pair classifier**. Qwen is Apache-2.0 and 7.6B parameters: LoRA rank 16 with a sequence-classification head, trained on 1.9M hard pairs (the first 0.31M on a Colab A100, the rest on 4× A10G). Its band AUC is 0.955, and adding it to the ensemble gives +0.00006 on validation.
 - **Two-run average.** Two full pipeline runs, with the reverse-name route at top-5 and top-10, are averaged pair by pair before blending (+0.00013 on validation).
 - CatBoost (0.9784) and random forest (0.9693) were weaker than XGBoost (0.9799) on identical features, and blending them did not help.
 - All models are MIT/Apache-licensed and at most 7.6B parameters (limit: 8B).
@@ -295,9 +295,9 @@ The France rules and routes cannot be measured on validation (no French labels).
 
 ## 6. Final submission (`avg_ce4_v17c`, public LB 0.989828)
 
-The submitted file builds on the pipeline above with four additions. Public LB history: `dec_cebase` 0.982855 → reverse-name
-route 0.98553 → France generator rules 0.98809 → native-script and R3/R6 routes 0.989052 → France invented-name rule 0.989412
-→ **final 0.989828**. The final step (+0.0004) adds label-validated France address routes, first matches for empty S1s and the
+The submitted file builds on the pipeline above with four additions. Public LB history: decoy features + e5-base cross-encoder
+0.982855 → reverse-name route 0.98553 → France generator rules 0.98809 → native-script and R3/R6 routes 0.989052 → France
+invented-name rule 0.989412 → **final 0.989828**. The final step (+0.0004) adds label-validated France address routes, first matches for empty S1s and the
 extended legal-form tie-break. The submitted file has 5,839,939 matches: 3.37 per S1 (US 3.39, India 3.38, France 3.32), and
 5.8% of S1 are predicted empty.
 
@@ -305,13 +305,14 @@ extended legal-form tie-break. The submitted file has 5,839,939 matches: 3.37 pe
 A `namerev` stage adds, for every S2/S3 record without an address, its top-k S1 by character-3-gram TF-IDF on the name. Blocking
 recall rises from 0.9849 to 0.9888. Two full runs (top-5 and top-10) are averaged pair by pair.
 
-**6.2 Cross-encoder ensemble.** The uncertain band is scored by three multilingual-e5-base rounds (base3, base4, base4b) and a
+**6.2 Cross-encoder ensemble.** The uncertain band is scored by three multilingual-e5-base rounds (rounds 3, 4 and 4b) and a
 Qwen2.5-7B-Instruct LoRA pair classifier (Apache-2.0, 7.6B parameters). Their logits are averaged and blended with the XGBoost
 logit (weight 0.6). France uses the French-adapted e5-small cross-encoder instead. Thresholds: US/India 0.8 (validation optimum),
 France 0.87 (leaderboard probes 0.97 → 0.93 → 0.90 → 0.87).
 
 **6.3 France generator rules (label-free).** France has no labels. We read the generator's operations off the test data and
-checked every rule against the same structural class in US/India labels:
+checked every rule against the same structural class in US/India labels. The codes in brackets are the rule names in
+`final_build.py --rules`:
 - **Suffix operation = match.** One S1 word is dropped and a French suffix is appended after the legal form (Fils, Groupe,
   Développement, Associés, France, Services, Cie). Rules A2P / A2F / A2N / E2 / OOC.
 - **Decoys, dropped.** In-place category swaps (Club → Comité, 164-word vocabulary; rule DP). Changed house numbers with an added
@@ -368,10 +369,10 @@ The public leaderboard rose from 0.9705 to 0.989828. What remains is mostly stru
 | `src/ber/features.py` | pair, competition, decoy-signature and global features; word log-odds fitting |
 | `src/ber/pipeline.py` | stages, candidate loading/pruning, decoders, prior-shift thresholds |
 | `src/ber/metric.py`, `src/ber/io.py` | macro F0.5; TSV reading/writing |
-| `src/run.py` | stages norm / block / dense / train / test |
+| `src/run.py` | stages norm / block / dense / namerev (reverse-name route) / train / test |
 | `src/ce_data.py`, `src/ce_train.py` | cross-encoder data, training and scoring |
 | `src/fit_pseudo_odds.py` | French decoy words from confident test predictions |
-| `src/blend.py` | model × cross-encoder blend, per-country thresholds, writes both output files |
+| `src/blend.py` | single-run decode used until 26 Sep (model × cross-encoder blend, per-country thresholds); superseded by `final_build.py` |
 | `src/llm_ce.py`, `src/sagemaker_llm.py` | Qwen2.5-7B LoRA pair classifier (training / scoring) |
 | `src/sagemaker_pipeline.py` | the AWS run of the full pipeline with the reverse-name route |
 | `src/final_build.py` | final decode: run average, CE ensemble, French CE, thresholds, France rules, route files, first match |
@@ -381,9 +382,10 @@ The public leaderboard rose from 0.9705 to 0.989828. What remains is mostly stru
 | `src/append_routes.py` | appends the v16 / v17 route files to the decoded build |
 | `src/r3_candidates.py`, `src/r3_score.py`, `src/r3_build.py`, `src/r6_candidates.py`, `src/r6_score.py`, `src/r3r6_merge.py` | R3 phonetic and R6 same-name compact-key routes: candidates, scoring, build, merge |
 | `src/artifacts/routes/` | every route / rule pair file used by the submitted build |
+| `src/artifacts/indic_dict.json`, `src/artifacts/odds_extra_france_iso.parquet` | learned Indic→Latin dictionary; calibrated French decoy-word scores |
 
-The exact commands are in `README.md`: normalise + block, dense retrieval, train (with the reverse-name route), test, cross-encoders, French words + re-score, then `final_build.py` and `append_routes.py` for the submitted file (section "Final build").
+`README.md` lists every command in run order (steps 1–7: main run, cross-encoders, France, the two reverse-name runs, more cross-encoders and Qwen, route files, final build), with where each step ran and how long it took.
 
 ### B. Additional Results
 
-See `README.md` for the run times. The full experiment log, including the blocking-recall tables and every model run, is summarised above.
+`README.md` gives the run time of each step. The results above summarise our full experiment log, which covers every blocking-recall table and model run.
