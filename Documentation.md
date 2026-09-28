@@ -15,6 +15,43 @@ We resolve every Source 1 business against ~10M Source 2/3 records with a four-s
 3. **Uncertain cases.** An ensemble of fine-tuned cross-encoders (three multilingual-e5-base rounds and a Qwen2.5-7B LoRA pair classifier) re-scores the pairs the model is unsure about.
 4. **Decoding.** An exclusivity-aware decode (every record goes to at most one S1) with per-country thresholds. It is followed by label-free France rules, a few extra routes, and tie-breaks for records the decode leaves unclaimed.
 
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 330}}}%%
+flowchart TD
+    IN["S1 businesses + S2/S3 records<br/>normalised: accents, OCR digits, legal forms, Indic → Latin"]
+
+    subgraph BLOCK["1 · Blocking (per country)"]
+        TF["Word TF-IDF<br/>top 20 records per S1"]
+        DE["Dense e5 retrieval<br/>top 20 records per S1<br/>+ top 2 S1 per record"]
+        NR["Name-only route<br/>records without an address:<br/>top 5 / 10 S1 by name"]
+        F1["Stage-1 XGBoost filter<br/>top 15 per S1, p ≥ 0.005"]
+    end
+
+    subgraph SCORE["2 · Scoring"]
+        X2["Stage-2 XGBoost<br/>similarity, competition and<br/>decoy-signature features<br/>two runs averaged"]
+    end
+
+    subgraph CROSS["3 · Uncertain pairs (0.02 ≤ p < 0.998)"]
+        CE["Cross-encoder ensemble<br/>3 × e5-base + Qwen2.5-7B LoRA<br/>France: French-adapted e5-small"]
+    end
+
+    subgraph DECODE["4 · Decoding"]
+        DEC["Exclusivity: each record → its best S1<br/>thresholds: US 0.80 · India 0.80 · France 0.87"]
+        RT["Records still unclaimed:<br/>France rules, targeted routes,<br/>legal-form tie-break, first match for empty S1"]
+    end
+
+    IN --> TF & DE & NR
+    TF & DE & NR --> F1
+    F1 --> X2
+    X2 -->|"confident pairs"| DEC
+    X2 -->|"uncertain pairs"| CE
+    CE -->|"blend: 0.6 XGBoost + 0.4 cross-encoders"| DEC
+    DEC --> RT
+    RT --> OUT1[("matching_results.tsv")]
+    F1 -.->|"filtered candidates"| OUT2[("candidate_pairs.tsv")]
+    RT -.->|"accepted route pairs"| OUT2
+```
+
 Three findings drove most of the gain:
 - **The unmatched records are generated lookalikes ("decoys").** These are branches of the S1 business with an added qualifier word and a shifted house number. We model that signature explicitly.
 - **France has no training labels.** We learn its decoy vocabulary (Ateliers, Sainte, city names, "France", …) from confident test predictions. We also read the generator's French operations off the test data (suffix words, category swaps, invented names and acronyms at the S1's address) and check every rule against the same structural class in the US/India labels. No external data is used.
@@ -96,12 +133,15 @@ All blocking runs **within country**. Every step is vectorised and chunked; the 
   2. **Dense retrieval.** `intfloat/multilingual-e5-small` (MIT, 118M parameters) embeddings of "name | address", exact top-k by blocked GPU matrix products. It handles transliterations, abbreviations and reordering that share no tokens.
   3. **Reverse dense.** The top-2 S1 for each S2/S3 record. This recovers name-only records whose generic names tie with many lookalikes in the forward direction.
   4. **Reverse-name route for records without an address.** For every S2/S3 record with an empty address, its top-5 S1 (top-10 in the second run) by character-3-gram TF-IDF on the name, within country. 64% of the validation misses that were never candidates were such records. This route raises blocking recall from 0.9849 to 0.9888.
-  5. **Learned filter (stage 1).** The union of TF-IDF top 20, dense top 20, reverse top 2 and the reverse-name pairs is scored by the stage-1 XGBoost model. Stage 2 keeps each S1's top 15 with p₁ ≥ 0.005.
+  5. **Learned filter (stage 1).** The stage-1 XGBoost model scores the union of TF-IDF top 20, dense top 20, reverse top 2 and the reverse-name pairs. Each S1 keeps its top 15 pairs with p₁ ≥ 0.005 for stage 2.
   6. **Targeted routes** for records the routes above never propose. Each is scored by its own classifier or rule, and its pairs are added to the candidate file:
-     - India native-script route: Indic-script names transliterated, then name + address TF-IDF and a classifier.
-     - R3: Double Metaphone of two name tokens + the house number.
-     - R6: same-name compact key sharing a house number or city word.
-     - France address-keyed routes: invented names and acronyms at the house number + street + city of exactly one S1; French suffix copies outside the candidate lists.
+     - **India native-script route** (`native_route.py`): Indic-script names are transliterated, then matched by name + address TF-IDF and scored by a classifier.
+     - **Phonetic route** (`phonetic_route_candidates.py`, `phonetic_route_score.py`, `phonetic_route_build.py`; US/India): the same Double Metaphone code for the first two name words and the same house number. It catches spelling variants of transliterated names.
+     - **Same-name route** (`samename_route_candidates.py`, `samename_route_score.py`; US/India): the same name once spaces are removed, at a shared house number or city word.
+     - **France address-keyed routes** (`france_name_replaced.py`, `france_shared_addr.py`): invented names and acronyms at the house number + street + city of exactly one S1.
+     - **French suffix copies** outside the candidate lists (rule `OOC` in `final_build.py`).
+
+     The phonetic and same-name routes are scored by the e5-base cross-encoder + a small XGBoost and merged into one route file (`phonetic_samename_merge.py`).
 
 - **Candidate pairs generated:** **7,670,609 test pairs (4.43 per S1)**: the stage-1-filtered lists of the two runs plus the route pairs. This is the exact set that is scored, and it is what `candidate_pairs.tsv` contains. 46.9k S1 (2.7%) end up with no candidates.
 
@@ -240,7 +280,7 @@ The France rules and routes cannot be measured on validation (no French labels).
 | Reverse-name route for address-less records | 0.98553 |
 | France suffix operation + changed-house-number rules | 0.98667 |
 | France generator rules v2 (suffix position, category swaps, out-of-candidate suffix copies), run average + 3-CE ensemble | 0.98809 |
-| India native-script route + R3/R6 routes | 0.98905 |
+| India native-script, phonetic and same-name routes | 0.98905 |
 | France invented-name route, Qwen in the ensemble, legal-form tie-break (2–3 same-name S1s) | 0.98941 |
 | **Final: France acronym / per-city / shared-address routes, first match for empty S1, extended legal-form tie-break** | **0.989828** |
 
@@ -296,7 +336,7 @@ The France rules and routes cannot be measured on validation (no French labels).
 ## 6. Final submission (`avg_ce4_v17c`, public LB 0.989828)
 
 The submitted file builds on the pipeline above with four additions. Public LB history: decoy features + e5-base cross-encoder
-0.982855 → reverse-name route 0.98553 → France generator rules 0.98809 → native-script and R3/R6 routes 0.989052 → France
+0.982855 → reverse-name route 0.98553 → France generator rules 0.98809 → native-script, phonetic and same-name routes 0.989052 → France
 invented-name rule 0.989412 → **final 0.989828**. The final step (+0.0004) adds label-validated France address routes, first matches for empty S1s and the
 extended legal-form tie-break. The submitted file has 5,839,939 matches: 3.37 per S1 (US 3.39, India 3.38, France 3.32), and
 5.8% of S1 are predicted empty.
@@ -326,9 +366,8 @@ checked every rule against the same structural class in US/India labels. The cod
 
 **6.4 Extra routes and tie-breaks (records the decode leaves unclaimed).**
 - India native-script route: transliterate, then name + address TF-IDF and a classifier; 97.7% precise on validation.
-- Kavya's R3 phonetic route (Double Metaphone + house number) and R6 same-name compact-key route, each scored by the e5-base
-  cross-encoder + XGBoost (`src/r3_candidates.py`, `r3_score.py`, `r3_build.py`, `r6_candidates.py`, `r6_score.py`,
-  merged by `r3r6_merge.py`).
+- Phonetic route and same-name route (Kavya's; section 3), each scored by the e5-base cross-encoder + XGBoost
+  (`src/phonetic_route_*.py`, `src/samename_route_*.py`, merged by `src/phonetic_samename_merge.py`).
 - First match for S1s still empty (US/India, blend ≥ 0.5; skips address-less same-name ties).
 - **Legal-form tie-break.** For an address-less record whose name belongs to 2+ S1s, the one S1 carrying the record's legal
   form. Train precision 95-97% / 90-91% / 84% with 0 / 1 / 2 same-name S1s without a legal form.
@@ -380,7 +419,9 @@ The public leaderboard rose from 0.9705 to 0.989828. What remains is mostly stru
 | `src/france_name_replaced.py`, `src/france_thr_safe.py`, `src/france_shared_addr.py` | France name-replaced / threshold-safe / shared-address rules |
 | `src/legal_tie.py` | legal-form tie-break for address-less same-name ties |
 | `src/append_routes.py` | appends the v16 / v17 route files to the decoded build |
-| `src/r3_candidates.py`, `src/r3_score.py`, `src/r3_build.py`, `src/r6_candidates.py`, `src/r6_score.py`, `src/r3r6_merge.py` | R3 phonetic and R6 same-name compact-key routes: candidates, scoring, build, merge |
+| `src/phonetic_route_candidates.py`, `src/phonetic_route_score.py`, `src/phonetic_route_build.py` | phonetic route: candidates, scoring, build |
+| `src/samename_route_candidates.py`, `src/samename_route_score.py` | same-name route: candidates, scoring and build |
+| `src/phonetic_samename_merge.py` | merges the two into one route file |
 | `src/artifacts/routes/` | every route / rule pair file used by the submitted build |
 | `src/artifacts/indic_dict.json`, `src/artifacts/odds_extra_france_iso.parquet` | learned Indic→Latin dictionary; calibrated French decoy-word scores |
 

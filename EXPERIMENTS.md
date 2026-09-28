@@ -1138,3 +1138,10 @@ Kaggle dataset `jvmusic/ber-france-v2`. Label-free estimates: A2F +0.00025, DP +
   follows the rule "address-less record, word-set core name shared by 2-3 S1, legal form on exactly one of them" (every pair
   has the same word-set key and nsn 2-3), but no variant tried reproduces it exactly (closest: the pipeline's name_legal
   against v6, 35 missed / 167 extra). The README says so; `legal_tie.py` is the refined rule.
+- **Route names for the package (28 Sep).** Kavya's experiment labels R3 and R6 raised the question of what R1, R2, R4 and R5
+  are (the key routes she measured and rejected), so the docs name them by what they do: R3 = the **phonetic route**, R6 = the
+  **same-name route**. Scripts renamed to match: `r3_candidates.py` / `r3_score.py` / `r3_build.py` -> `phonetic_route_*.py`,
+  `r6_candidates.py` / `r6_score.py` -> `samename_route_*.py`, `r3r6_merge.py` -> `phonetic_samename_merge.py` (arguments
+  `--phonetic*` / `--samename*` / `--cand`). The labels inside the data files stay R3 / R6. The package ships
+  `artifacts/v11/kv_r3r6_extras.parquet` as `phonetic_samename_adds.parquet`. The merge check was rerun after the renaming:
+  the same 7,155 pairs.

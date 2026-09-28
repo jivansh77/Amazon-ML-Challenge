@@ -1,16 +1,12 @@
-"""R6 route scoring and build (US/India recall routes, follow-up R5/R6; built from scripts/r3_score.py, STEPS 4-6).
+"""Phonetic route, step 2 of 3: scoring (US/India recall routes, STEPS 4-6; the route is labelled R3 in the data).
 
-  python scripts/r6_score.py --data <D> --work work --ce_dir work/ce_b2 --ce_train work/ce_data/train.parquet,work/ce_data2/train.parquet \
-      --r3_cand work/r3_cand --r3_score work/r3_score --r6_cand work/r6_cand --r3_build work/r3_build \
-      --base_matching BASE/matching_results.tsv --base_candidates BASE/candidate_pairs.tsv --out work/r6_score
+  python scripts/phonetic_route_score.py --data <D> --work work --ce_dir work/ce_b2 --ce_train work/ce_data/train.parquet,work/ce_data2/train.parquet \
+      --cand work/phonetic_cand --base_matching BASE/matching_results.tsv --base_candidates BASE/candidate_pairs.tsv --out work/phonetic_score
 
-Differences from r3_score.py: candidates from scripts/r6_candidates.py minus the R3 candidates; the baseline already contains
-the R3 adds (val: r3_score.py OOF prob >= 0.70, test: r3_v1 from scripts/r3_build.py); gate = both folds >= +0.0001 and at most 2
-singleton S1 lost; R6 only, two variants (top-2 new pairs per S1 as built, top-1 by IDF cosine); the passing variant with the higher mean
-fold gain is written to route_adds_test_v2.parquet and applied to r3_v1 -> r3r6_v1 (validator, France byte-identical, diff).
+Writes val_route_oof.parquet and route_adds_test.parquet (s1, m, prob, ce, claimed) to --out; scripts/phonetic_route_build.py
+applies them.
 
-
-4  Score the kept-route candidates (from scripts/r3_candidates.py) for clean val and test: string features + the
+4  Score the kept-route candidates (from scripts/phonetic_route_candidates.py) for clean val and test: string features + the
    e5-base cross-encoder of round 2 (--ce_dir, fp16). Fit a small XGBoost on clean val (2 folds by S1, out-of-fold) predicting a
    match for the route-only candidates.
 5  GATE on clean val (reproduce the proxy blend first: dec p + base2 CE, logit w 0.6, thr 0.75 = 0.98942):
@@ -35,11 +31,8 @@ ap.add_argument("--ce_dir", required=True, help="e5-base cross-encoder of round 
 ap.add_argument("--ce_train", required=True, help="train.parquet files the cross-encoders trained on (comma-separated): their S1 leave the clean val")
 ap.add_argument("--base_matching", required=True, help="matching_results.tsv of the decoded build the route extends")
 ap.add_argument("--base_candidates", required=True, help="candidate_pairs.tsv of that build")
-ap.add_argument("--r3_cand", required=True, help="scripts/r3_candidates.py output dir (route_val.parquet)")
-ap.add_argument("--r3_score", required=True, help="scripts/r3_score.py output dir (val_route_oof.parquet)")
-ap.add_argument("--r6_cand", required=True, help="scripts/r6_candidates.py output dir (route_val / route_test.parquet)")
-ap.add_argument("--r3_build", required=True, help="scripts/r3_build.py output dir (output/*_r3_v1.tsv)")
-ap.add_argument("--routes", default="R6", help="routes to score (comma-separated)")
+ap.add_argument("--cand", required=True, help="scripts/phonetic_route_candidates.py output dir (route_val / route_test.parquet)")
+ap.add_argument("--routes", default="R3", help="routes to score (comma-separated)")
 ap.add_argument("--validator", default="", help="the challenge's utils/validate_submission.py (optional)")
 ap.add_argument("--out", required=True)
 args = ap.parse_args()
@@ -92,7 +85,7 @@ def macro_f05(pred, truth, ids, beta=0.5):
                        .otherwise((1 + b2) * pl.col("tp") / ((1 + b2) * pl.col("tp") + b2 * (pl.col("nt") - pl.col("tp"))
                                                              + (pl.col("np") - pl.col("tp")))).alias("f"))
     return {"f05": d["f"].mean(), "sing": d.filter(pl.col("nt") == 0)["f"].mean(), "matched": d.filter(pl.col("nt") > 0)["f"].mean(),
-            "n": d.height, "sing_wrong": int(d.filter((pl.col("nt") == 0) & (pl.col("np") > 0)).height)}
+            "n": d.height}
 
 
 def decode(pairs, thr):
@@ -125,13 +118,6 @@ def baseline():
     gt = read_lists(os.path.join(DD, "train", "train_ground_truth.tsv"), "matched_entity_ids")
     truth = gt.join(ids, on="s1")
     pred = decode(va, THR_BASE)
-    oof = pl.read_parquet(f"{args.r3_score}/val_route_oof.parquet").join(ids, on="s1")
-    r3 = oof.filter((pl.col("prob") >= 0.70) & ~pl.col("m").is_in(pred["m"].implode()))
-    r3 = r3.filter(pl.col("prob") == pl.col("prob").max().over("m")).unique("m", keep="first").select("s1", "m")
-    log("val baseline: proxy blend", pred.height, "pairs + R3 adds", r3.height)
-    M["baseline_no_r3"] = macro_f05(pred, truth.join(ids, on="s1"), ids)
-    pred = pl.concat([pred, r3])
-    M["r3_val"] = {"adds": r3.height, "oof_s1m": oof.select("s1", "m").height}
     r = macro_f05(pred, truth, ids)
     log("clean val S1", ids.height, "pairs", va.height, "baseline", r)
     M["baseline"] = r; M["clean_s1"] = ids.height
@@ -237,15 +223,14 @@ def gate(va_cand, base_pred, truth, ids):
         for t in grid:
             p, n = with_adds(base_pred.join(fids[f], on="s1"), c, t)
             r = macro_f05(p, truth.join(fids[f], on="s1"), fids[f])
-            table[(f, t)] = {"d": r["f05"] - base[f]["f05"], "d_sing": r["sing"] - base[f]["sing"], "adds": n,
-                             "sing_lost": r["sing_wrong"] - base[f]["sing_wrong"]}
+            table[(f, t)] = {"d": r["f05"] - base[f]["f05"], "d_sing": r["sing"] - base[f]["sing"], "adds": n}
     for tune, chk in ((0, 1), (1, 0)):
         t = max(grid, key=lambda x: table[(tune, x)]["d"])
         res[f"tune{tune}_check{chk}"] = {"t": t, "tune": table[(tune, t)], "check": table[(chk, t)]}
     M["gate_table"] = {f"fold{f}_t{t}": v for (f, t), v in table.items()}
     M["gate"] = res; M["gate_base"] = base
     a = res["tune0_check1"]
-    ok = a["tune"]["d"] >= 1e-4 and a["check"]["d"] >= 1e-4 and a["tune"]["sing_lost"] <= 2 and a["check"]["sing_lost"] <= 2
+    ok = a["tune"]["d"] >= 2e-4 and a["check"]["d"] >= 2e-4 and a["tune"]["d_sing"] >= 0 and a["check"]["d_sing"] >= 0
     M["gate_pass"] = bool(ok)
     log("GATE", json.dumps(res), "PASS" if ok else "FAIL")
     return ok, a["t"]
@@ -257,15 +242,13 @@ def main():
     va, ids, truth, base_pred = baseline()
     save_metrics()
     # ---- clean val route candidates
-    r3v = pl.read_parquet(f"{args.r3_cand}/route_val.parquet").filter(pl.col("route") == "R3").select("s1", "m").unique()
-    rv = top1(pl.read_parquet(f"{args.r6_cand}/route_val.parquet")).join(ids, on="s1").join(r3v, on=["s1", "m"], how="anti")
+    rv = pl.read_parquet(f"{args.cand}/route_val.parquet").join(ids, on="s1")
     fv = features("train", rv).join(truth.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["s1", "m"], how="left").with_columns(pl.col("y").fill_null(0))
     fv = fv.join(va.select("s1", "m"), on=["s1", "m"], how="anti")          # route-only: never already scored
     nacc = base_pred.group_by("s1").len("n_acc")
     fv = fv.join(nacc, on="s1", how="left").with_columns(pl.col("n_acc").fill_null(0),
                                                          pl.col("m").is_in(base_pred["m"].implode()).cast(pl.Int8).alias("claimed"))
-    fv = fv.join(rv.select("s1", "m", "top1").unique(["s1", "m"]), on=["s1", "m"], how="left")
-    FEATS = [c for c in fv.columns if c not in ("s1", "m", "qi", "ci", "y", "fold", "prob", "top1")]
+    FEATS = [c for c in fv.columns if c not in ("s1", "m", "qi", "ci", "y", "fold", "prob")]
     M["feats"] = FEATS
     ids = ids.with_columns(pl.col("s1").map_elements(fold_of, return_dtype=pl.Int64).alias("fold"))
     fv = fv.join(ids, on="s1")
@@ -273,90 +256,44 @@ def main():
         {r: [int(fv.filter(pl.col(f"r_{r}") == 1).height), int(fv.filter(pl.col(f"r_{r}") == 1)["y"].sum())] for r in ROUTES})
     M["val_cands"] = fv.height; M["val_pos"] = int(fv["y"].sum())
     from sklearn.metrics import roc_auc_score
-    var = {}
-    for vn, sub in (("top2", fv), ("top1", fv.filter(pl.col("top1") == 1))):
-        oof = np.zeros(sub.height, np.float32)
-        for f in (0, 1):
-            ix = np.where(sub["fold"].to_numpy() == f)[0]
-            oof[ix], _ = fit_predict(sub.filter(pl.col("fold") != f), sub[ix])
-        sub = sub.with_columns(pl.Series("prob", oof))
-        ok, t = gate(sub, base_pred, truth, ids)
-        g = M["gate"]["tune0_check1"]
-        var[vn] = {"ok": ok, "t": t, "mean_gain": (g["tune"]["d"] + g["check"]["d"]) / 2, "cands": sub.height,
-                   "pos": int(sub["y"].sum()), "oof_auc": roc_auc_score(sub["y"], sub["prob"]), "gate": M["gate"],
-                   "gate_table": M["gate_table"]}
-        sub.select("s1", "m", "y", "prob", "ce", "claimed").write_parquet(f"{W}/val_route_oof_{vn}.parquet")
-        log("variant", vn, json.dumps({k: v for k, v in var[vn].items() if k not in ("gate_table",)}))
-    M["variants"] = var
-    passing = [v for v in var if var[v]["ok"]]
-    best = max(passing, key=lambda v: var[v]["mean_gain"]) if passing else None
-    M["chosen"] = best
-    log("chosen variant", best)
+    oof = np.zeros(fv.height, np.float32)
+    for f in (0, 1):
+        tr = fv.filter(pl.col("fold") != f); ix = np.where(fv["fold"].to_numpy() == f)[0]
+        oof[ix], _ = fit_predict(tr, fv[ix])
+    fv = fv.with_columns(pl.Series("prob", oof))
+    M["oof_auc"] = roc_auc_score(fv["y"], fv["prob"]); M["ce_auc"] = roc_auc_score(fv["y"], fv["ce"])
+    log("OOF AUC", M["oof_auc"], "CE alone", M["ce_auc"])
+    fv.select("s1", "m", "y", "prob", "ce", "claimed", *[f"r_{r}" for r in ROUTES]).write_parquet(f"{W}/val_route_oof.parquet")
+    save_metrics()
+    ok, t = gate(fv, base_pred, truth, ids)
     save_metrics()
     # ---- test (always scored; file edits only if the gate passes)
     tec = read_source(os.path.join(DD, "test", "test_source1.tsv")).select(pl.col("entity_id").alias("s1"), "country")
     trc = read_source(os.path.join(DD, "train", "train_source1.tsv")).select("country").unique()
     lab = tec.join(trc, on="country")                                        # S1 of countries with training labels
-    rt = top1(pl.read_parquet(f"{args.r6_cand}/route_test.parquet")).join(lab.select("s1"), on="s1")
-    if best == "top1":
-        rt = rt.filter(pl.col("top1") == 1)
-    sub_m = read_lists(f"{args.r3_build}/output/matching_results_r3_v1.tsv", "matched_entity_ids")
-    sub_c = read_lists(f"{args.r3_build}/output/candidate_pairs_r3_v1.tsv", "candidate_entity_ids")
+    rt = pl.read_parquet(f"{args.cand}/route_test.parquet").join(lab.select("s1"), on="s1")
+    sub_m = read_lists(args.base_matching, "matched_entity_ids")
+    sub_c = read_lists(args.base_candidates, "candidate_entity_ids")
     rt = rt.join(sub_c, on=["s1", "m"], how="anti")
     ft = features("test", rt)
     ft = ft.join(sub_m.group_by("s1").len("n_acc"), on="s1", how="left").with_columns(
         pl.col("n_acc").fill_null(0), pl.col("m").is_in(sub_m["m"].implode()).cast(pl.Int8).alias("claimed"))
-    trn = fv.filter(pl.col("top1") == 1) if best == "top1" else fv
-    _, model = fit_predict(trn, trn.head(1))
+    _, model = fit_predict(fv, fv.head(1))
     ft = ft.with_columns(pl.Series("prob", model.predict_proba(ft.select(FEATS).to_numpy())[:, 1]))
-    ft.select("s1", "m", "prob", "ce", "claimed", *[f"r_{r}" for r in ROUTES]).write_parquet(f"{W}/route_adds_test_v2.parquet")
+    ft.select("s1", "m", "prob", "ce", "claimed", *[f"r_{r}" for r in ROUTES]).write_parquet(f"{W}/route_adds_test.parquet")
     M["test_cands"] = ft.height
     M["test_prob_bands"] = {str(b): int((ft["prob"] >= b).sum()) for b in (0.5, 0.7, 0.8, 0.9, 0.95)}
     log("test route candidates", ft.height, M["test_prob_bands"])
     save_metrics()
-    if best:
-        t = var[best]["t"]
+    if ok:
         build_files(ft, t, tec, lab)
-        diff_report(ft, t, tec)
     M["done"] = True
-    save_metrics()
-
-
-def top1(r):
-    """R6 rows only, with a flag for the best new pair per S1 by IDF cosine."""
-    r = r.filter(pl.col("route").is_in(ROUTES))
-    return r.with_columns((pl.col("cos").rank("ordinal", descending=True).over("s1") == 1).cast(pl.Int8).alias("top1"))
-
-
-NAME = "r3r6_v1"
-
-
-def diff_report(ft, t, tec):
-    """Counts and examples of the added pairs (by country, probability, claim / exclusivity losses)."""
-    add = ft.filter((pl.col("prob") >= t) & (pl.col("claimed") == 0))
-    add = add.filter(pl.col("prob") == pl.col("prob").max().over("m")).unique("m", keep="first").join(tec, on="s1")
-    M["diff"] = {"adds_by_country": dict(add.group_by("country").len().iter_rows()),
-                 "adds_s1_by_country": dict(add.group_by("country").agg(pl.col("s1").n_unique()).iter_rows()),
-                 "prob_bands": {str(b): int((add["prob"] >= b).sum()) for b in (0.5, 0.7, 0.8, 0.9, 0.95, 0.99)},
-                 "above_t_but_claimed": int(ft.filter((pl.col("prob") >= t) & (pl.col("claimed") == 1)).height),
-                 "above_t_lost_to_exclusivity": int(ft.filter((pl.col("prob") >= t) & (pl.col("claimed") == 0)).height - add.height)}
-    dd = os.path.join(DD, "test")
-    txt = lambda d, c: d.select(pl.col("entity_id").alias(c), (pl.col("business_name") + " | " + pl.col("business_address")).alias(c + "_t"))
-    s1 = txt(read_source(f"{dd}/test_source1.tsv"), "s1")
-    s23 = txt(pl.concat([read_source(f"{dd}/test_source{k}.tsv") for k in (2, 3)]), "m")
-    ex = add.sample(n=min(40, add.height), seed=0).join(s1, on="s1").join(s23, on="m").sort("prob")
-    with open(f"{W}/diff_report_{NAME}.md", "w") as f:
-        f.write(f"# {NAME}: r3_v1 + R6 route adds (variant {M.get('chosen')}, t={t})\n\n")
-        f.write("```\n" + json.dumps(M["diff"], indent=1) + "\n```\n\n| country | prob | S1 | added record |\n|---|---|---|---|\n")
-        for r in ex.iter_rows(named=True):
-            f.write(f"| {r['country']} | {r['prob']:.3f} | {r['s1_t']} | {r['m_t']} |\n")
-    log("diff", json.dumps(M["diff"]))
     save_metrics()
 
 
 def build_files(ft, t, tec, lab):
     """Submitted file + route adds (prob >= t, unclaimed, labelled-country S1 only), rows of other S1 untouched."""
-    pm, pc = f"{args.r3_build}/output/matching_results_r3_v1.tsv", f"{args.r3_build}/output/candidate_pairs_r3_v1.tsv"
+    pm, pc = args.base_matching, args.base_candidates
     add = ft.filter((pl.col("prob") >= t) & (pl.col("claimed") == 0))
     add = add.filter(pl.col("prob") == pl.col("prob").max().over("m")).unique("m", keep="first").join(lab.select("s1"), on="s1")
     addg = dict(add.group_by("s1").agg(pl.col("m")).iter_rows())
@@ -380,16 +317,15 @@ def build_files(ft, t, tec, lab):
                 g.write(line)
         return n
     os.makedirs(f"{W}/output", exist_ok=True)
-    om, oc = f"{W}/output/matching_results_{NAME}.tsv", f"{W}/output/candidate_pairs_{NAME}.tsv"
+    om, oc = f"{W}/output/matching_results_rt.tsv", f"{W}/output/candidate_pairs_rt.tsv"
     M["rows_changed_matching"] = edit(pm, om); M["rows_changed_candidates"] = edit(pc, oc)
     # rows of S1 without training labels (France) must be byte-identical
     unl = set(tec.join(lab.select("s1"), on="s1", how="anti")["s1"].to_list())
-    orig_m, orig_c = args.base_matching, args.base_candidates
-    for a, b, nm in ((pm, om, "matching"), (pc, oc, "candidates"), (orig_m, om, "matching_vs_submitted"), (orig_c, oc, "candidates_vs_submitted")):
+    for a, b, nm in ((pm, om, "matching"), (pc, oc, "candidates")):
         la = [l for l in open(a, encoding="utf-8") if l.split("\t", 1)[0] in unl]
         lb = [l for l in open(b, encoding="utf-8") if l.split("\t", 1)[0] in unl]
         M[f"unlabelled_identical_{nm}"] = la == lb and len(la) == len(unl)
-    log("unlabelled rows identical", {k: v for k, v in M.items() if k.startswith("unlabelled_identical")})
+    log("unlabelled rows identical", M["unlabelled_identical_matching"], M["unlabelled_identical_candidates"])
     if args.validator:
         r = subprocess.run([sys.executable, args.validator, "--matching", om, "--candidate", oc, "--test-dir", os.path.join(DD, "test"),
                             "--check-ids"], capture_output=True, text=True)
