@@ -326,7 +326,8 @@ checked every rule against the same structural class in US/India labels:
 **6.4 Extra routes and tie-breaks (records the decode leaves unclaimed).**
 - India native-script route: transliterate, then name + address TF-IDF and a classifier; 97.7% precise on validation.
 - Kavya's R3 phonetic route (Double Metaphone + house number) and R6 same-name compact-key route, each scored by the e5-base
-  cross-encoder + XGBoost (her Kaggle kernels are in `src/routes_r3_r6/`).
+  cross-encoder + XGBoost (`src/r3_candidates.py`, `r3_score.py`, `r3_build.py`, `r6_candidates.py`, `r6_score.py`,
+  merged by `r3r6_merge.py`).
 - First match for S1s still empty (US/India, blend ≥ 0.5; skips address-less same-name ties).
 - **Legal-form tie-break.** For an address-less record whose name belongs to 2+ S1s, the one S1 carrying the record's legal
   form. Train precision 95-97% / 90-91% / 84% with 0 / 1 / 2 same-name S1s without a legal form.
@@ -378,7 +379,7 @@ The public leaderboard rose from 0.9705 to 0.989828. What remains is mostly stru
 | `src/france_name_replaced.py`, `src/france_thr_safe.py`, `src/france_shared_addr.py` | France name-replaced / threshold-safe / shared-address rules |
 | `src/legal_tie.py` | legal-form tie-break for address-less same-name ties |
 | `src/append_routes.py` | appends the v16 / v17 route files to the decoded build |
-| `src/routes_r3_r6/` | R3 phonetic and R6 same-name compact-key routes (Kaggle kernels) |
+| `src/r3_candidates.py`, `src/r3_score.py`, `src/r3_build.py`, `src/r6_candidates.py`, `src/r6_score.py`, `src/r3r6_merge.py` | R3 phonetic and R6 same-name compact-key routes: candidates, scoring, build, merge |
 | `src/artifacts/routes/` | every route / rule pair file used by the submitted build |
 
 The exact commands are in `README.md`: normalise + block, dense retrieval, train (with the reverse-name route), test, cross-encoders, French words + re-score, then `final_build.py` and `append_routes.py` for the submitted file (section "Final build").

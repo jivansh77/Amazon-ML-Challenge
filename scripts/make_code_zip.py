@@ -5,8 +5,9 @@
       # final package: output/{matching_results,candidate_pairs}.tsv, code/business_entity_resolution/,
       # Documentation_template.md
 
-The code folder holds every source file under src/ (the ber package, the pipeline scripts and the learned
-Indic dictionary), a README.md with the exact run order and a pinned requirements.txt.
+The code folder holds every source file under src/ (the ber package, the pipeline and route scripts, the learned Indic
+dictionary, the calibrated French words and the route pair files of the final build), a README.md with the exact run order
+and a pinned requirements.txt.
 """
 import argparse, os, zipfile
 
@@ -23,10 +24,13 @@ req = ["polars==1.35.2", "pyarrow==24.0.0", "numpy==2.0.2", "scipy==1.16.3", "sc
        "xgboost==3.2.0", "rapidfuzz==3.14.6", "sparse_dot_topn==1.2.0", "indic_transliteration==2.3.82",
        "torch==2.10.0  # CUDA build for the dense / XGBoost / cross-encoder steps", "transformers==5.0.0",
        "sentence-transformers==5.4.1", "tokenizers==0.22.2",
-       "peft  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the R3 route (BSD)"]
+       "peft==0.21.0  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the R3 route (BSD)",
+       "# The AWS jobs (sagemaker_pipeline.py, sagemaker_llm.py) ran in the SageMaker PyTorch GPU image and pip-installed",
+       "# transformers==4.57.1 (pinned in those scripts) and peft without a version; 0.21.0 was the newest release then."]
 SCRIPTS = ["run.py", "fit_translit.py", "ce_data.py", "ce_train.py", "fit_pseudo_odds.py", "blend.py", "llm_ce.py",
-           "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "final_build.py", "france_name_replaced.py",
-           "france_thr_safe.py", "france_shared_addr.py", "legal_tie.py", "append_routes.py"]
+           "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "r3_candidates.py", "r3_score.py", "r3_build.py",
+           "r6_candidates.py", "r6_score.py", "r3r6_merge.py", "france_name_replaced.py", "france_thr_safe.py",
+           "france_shared_addr.py", "legal_tie.py", "final_build.py", "append_routes.py"]
 # route / rule pair files the submitted build reads (the --extra_pairs of final_build.py and the append_routes.py steps)
 ROUTES = {"v11": ["native_adds_q90", "kv_r3r6_extras"],
           "v13": ["fr_inv_adds", "fr_acr_adds", "fr_fuzzy_street_adds", "legal_tiebreak_adds", "fr_inv_city_adds_f",
@@ -35,129 +39,214 @@ ROUTES = {"v11": ["native_adds_q90", "kv_r3r6_extras"],
           "v16": ["fr_unit_adds", "fr_acr_city_shared_adds"],
           "v17": ["legal_tie_adds_v17c"]}
 ODDS = ["odds_extra_france_iso.parquet"]   # calibrated French decoy words used by the final runs
-R3R6 = ["rt-miss.py", "rt-score.py", "rt-build.py", "rt-miss2-tr.py", "rt-miss2-te.py", "rt-score2.py"]   # R3 / R6 route scripts
 
-readme = """# Business Entity Resolution (team Yoddhas)
+readme = r"""# Business Entity Resolution (team Yoddhas)
 
-Pipeline: normalise -> block (word TF-IDF + multilingual-e5 dense retrieval, forward + reverse, unioned)
--> stage-1 XGBoost (also the learned candidate filter: top 15, p >= 0.005 -> ~4.2 candidates per S1)
--> stage-2 XGBoost -> multilingual-e5 cross-encoder on the uncertain band -> logit blend
--> exclusivity + per-country prior-corrected thresholds.
-Models: XGBoost (Apache-2.0), intfloat/multilingual-e5-small and -base (MIT, 118M / 278M parameters) and, in the final build,
-a Qwen2.5-7B-Instruct LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data.
+Pipeline: normalise -> block (word TF-IDF + multilingual-e5 dense retrieval, forward + reverse, and a reverse-name route for
+records without an address) -> stage-1 XGBoost (also the learned candidate filter: top 15, p >= 0.005) -> stage-2 XGBoost
+-> cross-encoder ensemble on the uncertain band (three multilingual-e5-base rounds + a Qwen2.5-7B LoRA; a French-adapted
+e5-small for France) -> logit blend -> exclusivity + per-country thresholds -> France generator rules and targeted routes
+for the records the decode leaves unclaimed.
+Models: XGBoost (Apache-2.0), intfloat/multilingual-e5-small and -base (MIT, 118M / 278M parameters), Qwen2.5-7B-Instruct
+LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data.
 
 ## Environment
-Python 3.12, `pip install -r requirements.txt`. Developed on Kaggle (4 CPU, 30 GB RAM, 1x T4 16 GB).
-The dense, train, test and cross-encoder steps need a CUDA GPU; everything else runs on CPU.
-`<D>` is the folder that contains `train/` and `test/`; `work/` holds all intermediate files.
+Python 3.12, `pip install -r requirements.txt` (pinned: the Kaggle image most steps ran on; 4 CPU, 30 GB RAM, 1x T4 or
+P100 16 GB). The two reverse-name runs and the Qwen LoRA ran on AWS SageMaker ml.g5.12xlarge (48 CPU, 192 GB RAM,
+4x A10G 24 GB) through `src/sagemaker_pipeline.py` and `src/sagemaker_llm.py`; those jobs used transformers 4.57.1.
+GPU steps: dense, train, test, the cross-encoders, R3/R6 scoring and Qwen; everything else runs on CPU.
+`<D>` is the folder that contains `train/` and `test/`; all other folders below are work folders created by the commands.
 
-## Reproduce (data -> blocking -> matching -> output)
+## What reproduces exactly
+- The last three commands of step 7, rerun from this folder on our v15b build, reproduce both files of `output/`
+  byte-for-byte. `final_build.py` rebuilt our earlier leaderboard files from the saved run scores with no pair differences.
+- A rerun from the raw data gives close, not identical, files: the cross-encoders and the Qwen LoRA train for a fixed
+  wall-clock time (`--train_min`, `--stop_at`) without a fixed torch seed, and GPU training is not bit-exact across machines.
+  Data sampling is seeded; the seeds are in the commands (the S1 samples of the four cross-encoder training sets were
+  checked against ours: identical).
+- The route pair files ship in `src/artifacts/routes/`. Each was made by the script in step 6, against the build that was
+  current then. Those builds used earlier versions of the France rules, so rerunning a script against a build of today's
+  `final_build.py` can differ in a few records. One file (`legal_tiebreak_adds`) came from a notebook snippet that was not
+  kept; its rule is in step 6.
+- The AWS jobs' exact arguments are in their SageMaker job records (`yoddhas-pipe-namerev-0926-1701` for the top-5 run and
+  the matching top-10 job; `yoddhas-llm-qwen7b-g5b` for Qwen). The commands below come from those scripts, the Kaggle
+  notebooks that ran each step, and our experiment log.
+
+## 1. Main run `work` (Kaggle)
 ```
-cd code/business_entity_resolution
-# 0) Indic -> Latin word dictionary learned from the training pairs (CPU, ~10 min; a copy ships in src/artifacts)
-python src/fit_translit.py <D> src/artifacts/indic_dict.json
-# 1) normalise + TF-IDF blocking, per country (CPU, ~1.5 h train, ~1 h test)
-python src/run.py --data <D> --work work --stages norm,block --splits train,test --routes tok --tok_max_df 0.01
-# 2) dense retrieval: multilingual-e5-small, forward top 30 + reverse top 5 (GPU, ~2 h)
+python src/fit_translit.py <D> src/artifacts/indic_dict.json      # Indic -> Latin word dictionary (a copy ships)
+python src/run.py --data <D> --work work --stages norm,block --splits train,test --routes tok --tok_max_df 0.01 \
+    --indic src/artifacts/indic_dict.json
 python src/run.py --data <D> --work work --stages dense --k_dense 30 --k_rev 5
-# 3) two-stage XGBoost with decoy-signature features; validation report + val_scores.parquet (GPU, ~1.5 h)
-python src/run.py --data <D> --work work --stages train --stage2 --global_sims --decoy_feats --model xgb \\
-    --neg_rate 0.2 --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 \\
-    --s2_topk 15 --s2_minp 0.005
-# 4) score test (writes work/test_scores.parquet and a first work/output/)
+python src/run.py --data <D> --work work --stages train --stage2 --global_sims --decoy_feats --model xgb --neg_rate 0.2 \
+    --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 --s2_topk 15 --s2_minp 0.005
 python src/run.py --data <D> --work work --stages test --prior_thr
-# 5) cross-encoders (GPU). Pair files of 160k training S1 outside validation (+ val/test uncertain bands), then
-#    a) multilingual-e5-small, 55 min (used for the French words and the French cross-encoder below)
-python src/ce_data.py --data <D> --work work --out work/ce_data
-python src/ce_train.py --work work/ce --ce_data work/ce_data --train_min 55
-#    b) multilingual-e5-base, 150 min, then a second round on 160k fresh S1 from its checkpoint
-python src/ce_train.py --work work/ce_b1 --ce_data work/ce_data --base_model intfloat/multilingual-e5-base --lr 3e-5 --train_min 150
-python src/ce_data.py --data <D> --work work --out work/ce_data2 --parts train --seed 5 --exclude_s1 work/ce_data/train.parquet
-python src/ce_train.py --work work/ce_b2 --ce_data work/ce_data --init_dir work/ce_b1/ce_model \\
-    --train_mix work/ce_data2/train.parquet:1 --lr 2e-5 --train_min 170
-# 6) countries without training labels (France): learn their decoy words from confident test predictions
-#    (isotonic-calibrated on the labelled countries), re-score test with them in a second work dir
-python src/fit_pseudo_odds.py --data <D> --scores work/test_scores.parquet --ce work/ce/ce_test.parquet \\
-    --s1n work/test_s1n.parquet --s23n work/test_s23n.parquet --train_odds work/tokodds_extra.parquet \\
-    --out work/odds_extra.parquet
-python src/run.py --data <D> --work work_fr --reuse work --stages test --prior_thr --odds_extra work/odds_extra.parquet
-#    ... and adapt the e5-small cross-encoder to them (self-training on 300k confident test pairs + 13% of its pairs),
-#    scoring their whole uncertain band
-python src/ce_data.py --data <D> --work work --out work/ce_fr_data --parts pseudo --ce_scores work/ce/ce_test.parquet
-python src/ce_data.py --data <D> --work work_fr --out work/ce_fr_data --parts test --test_countries unlabelled --lo 0.003 --hi 0.9995
-python src/ce_train.py --work work/ce_fr --ce_data work/ce_fr_data --init_dir work/ce/ce_model \\
-    --train_mix pseudo.parquet:1,work/ce_data/train.parquet:0.13 --lr 2e-5 --train_min 30
-# 7) blend (logit, weight 0.6 for XGBoost) + exclusivity + per-country thresholds -> output/
-python src/blend.py --data <D> --work work --ce work/ce_b2 --override_scores unlabelled:work_fr/test_scores.parquet \\
-    --ce_test_override work/ce_fr/ce_test.parquet --out output --w 0.6 --thr US=0.8,India=0.8,France=0.93
 ```
-Thresholds: `blend.py` prints a prior-shift estimate per country (validation matches per S1 in each score band
-divided by the test pairs per S1 in that band = the band's precision on test; keep bands above ~0.78).
-US/India use the validation optimum (0.8, which the estimate agrees with); France, which has no labels, uses 0.93,
-chosen with leaderboard probes (0.97 -> 0.93 improved it; lower bands fall below break-even precision).
-`candidate_pairs.tsv` is the exact set the matching stage runs on:
-- the stage-1 filter's output, which the stage-2 model and the cross-encoders score;
-- in the final build, the stage-1 output of both runs plus the pairs accepted by the targeted routes.
 
-That is 4.43 pairs per S1, 1.31× the final matches.
-
-## Final build of the submitted file (`avg_ce4_v17c`, public LB 0.989828, the file in `output/`)
-Steps 1-6 above produce the model and cross-encoder scores. Step 7 (`blend.py`, one run, France 0.93) was our single-run decode
-until 26 Sep. The submitted file replaces it: `src/final_build.py` decodes it from two pipeline runs, a cross-encoder ensemble
-and route/rule pair files, and `src/append_routes.py` then appends two more route steps.
-
-1. **Two pipeline runs with the reverse-name route** for address-less records (`namerev` stage: top-5 and top-10 S1 per record by
-   name). `src/sagemaker_pipeline.py` holds the exact commands (AWS ml.g5.12xlarge):
+## 2. Cross-encoders (Kaggle GPU)
+Each training set holds 160k training S1 outside the validation split and the earlier sets: every true match and the hard
+negatives of their candidate lists (about 2.2M pairs). The first set's S1 sample was drawn outside the validation S1 of an
+earlier train run (`big`, with `--drop_s1 0.19`), which is rerun here only for that.
 ```
-python src/run.py --data <D> --work nr --stages norm,block --splits train,test --routes tok --tok_max_df 0.01 --indic src/artifacts/indic_dict.json
+python src/run.py --data <D> --work big --reuse work --stages train --stage2 --global_sims --model xgb --neg_rate 0.25 \
+    --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 --drop_s1 0.19 --s2_topk 15 --s2_minp 0.005
+python src/ce_data.py --data <D> --work big --out ce_data --parts train
+python src/ce_data.py --data <D> --work work --out ce_data2 --parts train --seed 5 --exclude_s1 ce_data/train.parquet
+python src/ce_data.py --data <D> --work work --out ce_data3 --parts train --seed 9 \
+    --exclude_s1 ce_data/train.parquet,ce_data2/train.parquet
+python src/ce_data.py --data <D> --work work --out ce_data4 --parts train --seed 13 \
+    --exclude_s1 ce_data/train.parquet,ce_data2/train.parquet,ce_data3/train.parquet
+python src/ce_data.py --data <D> --work work --out ce_dec --parts val,test          # uncertain band (0.02 <= p < 0.998)
+# e5-small (for the French words and the French cross-encoder), then e5-base rounds 1, 2, 3 and 3b
+python src/ce_train.py --work ce --ce_data ce_dec --train_mix ce_data/train.parquet:1 --train_min 55
+python src/ce_train.py --work ce_b1 --ce_data ce_dec --train_mix ce_data/train.parquet:1 \
+    --base_model intfloat/multilingual-e5-base --lr 3e-5 --train_min 150
+python src/ce_train.py --work ce_b2 --ce_data ce_dec --init_dir ce_b1/ce_model --train_mix ce_data2/train.parquet:1 --lr 2e-5 --train_min 170
+python src/ce_train.py --work ce_b3 --ce_data ce_dec --init_dir ce_b2/ce_model --train_mix ce_data3/train.parquet:1 --lr 1.5e-5 --train_min 170
+python src/ce_train.py --work ce_b3b --ce_data ce_dec --init_dir ce_b2/ce_model --train_mix ce_data4/train.parquet:1 --lr 1.5e-5 --train_min 150
+```
+Our e5-small model was trained with the bands of `big` in its folder and then re-scored on `ce_dec`; the first
+`ce_train.py` line does both at once.
+
+## 3. France (no training labels)
+```
+# French decoy words learned from confident test predictions, isotonic-calibrated on US/India
+# (= src/artifacts/odds_extra_france_iso.parquet)
+python src/fit_pseudo_odds.py --data <D> --scores work/test_scores.parquet --ce ce/ce_test.parquet --s1n work/test_s1n.parquet \
+    --s23n work/test_s23n.parquet --train_odds work/tokodds_extra.parquet --out odds_extra_france_iso.parquet
+# French-adapted e5-small: self-training on 300k confident French test pairs + 13% of the first training set
+python src/ce_data.py --data <D> --work work --out ce_fr_data --parts pseudo --ce_scores ce/ce_test.parquet
+python src/ce_data.py --data <D> --work work --out ce_fr_data --parts test --test_countries unlabelled --lo 0.003 --hi 0.9995
+python src/ce_train.py --work ce_fr --ce_data ce_fr_data --init_dir ce/ce_model \
+    --train_mix pseudo.parquet:1,ce_data/train.parquet:0.13 --lr 2e-5 --train_min 30
+```
+
+## 4. Reverse-name runs `nr` (top 5) and `nr10` (top 10) (AWS, `src/sagemaker_pipeline.py`)
+Step 1 plus the `namerev` stage: every S2/S3 record without an address gets its top-k S1 by character 3-gram TF-IDF on the
+name as extra candidates. The uncertain band is then scored by the e5-base round-3 cross-encoder, and France is re-scored
+with the French decoy words.
+```
+python src/run.py --data <D> --work nr --stages norm,block --splits train,test --routes tok --tok_max_df 0.01 \
+    --indic src/artifacts/indic_dict.json
 python src/run.py --data <D> --work nr --stages dense --splits train,test --k_dense 30 --k_rev 5
-python src/run.py --data <D> --work nr --stages namerev,train --splits train,test --stage2 --global_sims --decoy_feats --model xgb \\
-    --neg_rate 0.2 --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 --s2_topk 15 --s2_minp 0.005
+python src/run.py --data <D> --work nr --stages namerev,train --splits train,test --stage2 --global_sims --decoy_feats \
+    --model xgb --neg_rate 0.2 --frac_a 0.45 --frac_b 0.45 --cap_tok 20 --cap_dense 20 --cap_rdense 2 --rounds 4000 \
+    --s2_topk 15 --s2_minp 0.005 --cap_rname 5
 python src/run.py --data <D> --work nr --stages test --prior_thr
 python src/run.py --data <D> --work nr_fr --reuse nr --stages test --prior_thr --odds_extra src/artifacts/odds_extra_france_iso.parquet
-cp nr_fr/test_scores.parquet nr/fr_test_scores.parquet          # France is scored with the calibrated French decoy words
-# second run: the same with --k_namerev 10 into nr10/
+cp nr_fr/test_scores.parquet nr/fr_test_scores.parquet             # France uses these scores
+python src/ce_data.py --data <D> --work nr --out ce_nr --parts val,test
+python src/ce_train.py --work nr_ce --ce_data ce_nr --model_dir ce_b3/ce_model
+cp nr_ce/ce_test.parquet nr/ce_test.parquet
+# French cross-encoder on the France band pairs that ce_fr has not scored yet
+python src/ce_data.py --data <D> --work nr_fr --out ce_nr_fr --parts test --test_countries unlabelled --skip_scored ce_fr/ce_test.parquet
+python src/ce_train.py --work nr_cefr --ce_data ce_nr_fr --model_dir ce_fr/ce_model
+#   nr/ce_test_france.parquet = ce_fr/ce_test.parquet + nr_cefr/ce_test.parquet
 ```
-2. **Cross-encoders** on the uncertain band (steps 5-6 above): multilingual-e5-base rounds 3, 4 and 4b (`ce_data.py` + `ce_train.py`),
-   a Qwen2.5-7B-Instruct LoRA pair classifier (`src/llm_ce.py`, Apache-2.0, 7.6B parameters; `src/sagemaker_llm.py` runs it on AWS),
-   and the French-adapted e5-small cross-encoder for France.
-3. **Route / rule pair files** (in `src/artifacts/routes/`; each adds pairs only for records the decode leaves unclaimed):
-   - `v11/native_adds_q90.parquet`: India native-script route, `src/native_route.py`.
-   - `v11/kv_r3r6_extras.parquet`: R3 phonetic route (Double Metaphone of the name + house number) and R6 same-name compact-key
-     route, written as Kaggle kernels (`src/routes_r3_r6/`): R3 = `rt-miss.py` -> `rt-score.py` -> `rt-build.py`,
-     R6 = `rt-miss2-tr.py` + `rt-miss2-te.py` -> `rt-score2.py`. Each kernel finds its inputs (the pipeline's normalised records,
-     candidates and scores, and the previous kernel's output) under `/kaggle/input` and writes to `/kaggle/working`; the pairs
-     are the R3/R6 adds on records the decode left unclaimed.
-   - France name-replaced copies (`src/france_name_replaced.py`, modes default / `--unique_by city` / `fuzzy_street` / `inv_legal` /
-     `acr_shared`), the France 0.85 safe subset (`src/france_thr_safe.py`), shared-address sub-number / acronym rules
-     (`src/france_shared_addr.py`) and the legal-form tie-break for address-less same-name ties (`src/legal_tie.py`).
-   - The France generator rules (`--rules` below: suffix adds, house-number drops, ...) are implemented in `final_build.py`.
-4. **Decode** (US/India thresholds 0.8, France 0.87; France generator rules; first match for empty US/India S1):
+`nr10` is the same with `--k_namerev 10 --cap_rname 10` in the train step, into `nr10/`. Its round-3 scores are
+`nr10/cebase_ce_test.parquet`, and its French band pairs that `nr` does not have are `nr10/ce_test_france_new.parquet`.
+The new French band pairs of both runs were scored on CPU, because the AWS job's French step failed on a tokenizer saved by a
+newer transformers. Our `nr/ce_test_france.parquet` (448,608 pairs) also holds 2,693 further low-score France pairs.
+
+## 5. Cross-encoder rounds 4 and 4b (Kaggle P100) and the Qwen LoRA (AWS)
+```
+python src/ce_train.py --work ce_base4 --ce_data ce_nr --init_dir ce_b3/ce_model --train_mix ce_data4/train.parquet:1 --lr 1.5e-5 --train_min 300
+python src/ce_train.py --work ce_base4b --ce_data ce_nr --init_dir ce_b3b/ce_model --train_mix ce_data3/train.parquet:1 --lr 1.5e-5 --train_min 300
+# Qwen2.5-7B-Instruct LoRA (rank 16, sequence-classification head) on the 4 GPUs, via src/sagemaker_llm.py:
+torchrun --nproc_per_node=4 src/llm_ce.py --model Qwen/Qwen2.5-7B-Instruct --ce_data llm --work qwen --parts val_band,test_sub \
+    --chunk 25000 --bs 6 --lr 1e-4 --train_pairs 2232301 --stop_at 2026-09-27T08:30
+cp qwen/ce_test.parquet qwen_ce_test.parquet
+```
+`llm/` holds `train.parquet` (= `ce_data2/train.parquet`, 2,232,301 pairs), `val_band.parquet` (= `ce_dec/val_band.parquet`)
+and `test_sub.parquet`: the `ce_dec` test band cut to the pairs whose blend of stage-2 p and e5-base cross-encoder is in
+[0.05, 0.995) (France does not use Qwen). Training was stopped at 08:30 UTC 27 Sep after 1.9M pairs. These settings come
+from our log (`--train_pairs` written as "all pairs"); the job record has the exact argument list.
+
+## 6. Route and rule pair files (`src/artifacts/routes/`)
+Each file adds pairs only for records the decode leaves unclaimed; `final_build.py --extra_pairs` applies them in the order of
+step 7 (an earlier file wins a record). "Against" is the build whose matches the script read as `--claimed`:
+- v2h: the first decode of `nr` + `nr10` with the rounds 3/4/4b ensemble and the France rules A2, A2F, HN_A, DP, E2, OOC, HNK.
+- v3: v2h + rule fixes (A2P, A2N, the DP guard, dotted legal forms). v4: + native route. v6: + R3/R6.
+- v9s: + Qwen in the ensemble and the first tie-break. v10s ... v16: + the files below, in order.
+
+| File | Pairs | Made by | Against |
+|---|---|---|---|
+| `v11/native_adds_q90` | 8,480 | `native_route.py --work nat --claimed <v3> --cand <v3 candidates> --thr 0.9` | v3 |
+| `v11/kv_r3r6_extras` | 7,156 | R3/R6 scripts below, then `r3r6_merge.py` | v2h (base), v4 |
+| `v13/fr_inv_adds` | 5,135 | `france_name_replaced.py --claimed <v9s> --out_inv` | v9s |
+| `v13/fr_acr_adds` | 1,727 | `france_name_replaced.py --claimed <v10s> --out_acr` | v10s |
+| `v13/fr_fuzzy_street_adds` | 1,181 | `france_name_replaced.py --mode fuzzy_street --out` | v11 |
+| `v13/legal_tiebreak_adds` | 1,258 | notebook snippet (rule below) | v9s (before it) |
+| `v13/fr_inv_city_adds_f` | 1,819 | `france_name_replaced.py --unique_by city --drop_foreign_handles --out_inv` | v12 |
+| `v13/fr_acr_city_adds` | 844 | the same run, `--out_acr` | v12 |
+| `v13/fr_inv_legal_adds` | 84 | `france_name_replaced.py --mode inv_legal --out` | v13 before it |
+| `v15/fr_acr_shared_adds` | 371 | `france_name_replaced.py --mode acr_shared --out` | v14b |
+| `v15/fr_thr85_safe_adds` | 288 | `france_thr_safe.py --base <v15> --low <v15 built with --thr US=0.8,India=0.8,France=0.85>` | v15 |
+| `v16/fr_unit_adds` | 297 | `france_shared_addr.py --mode unit` | v15b |
+| `v16/fr_acr_city_shared_adds` | 709 | `france_shared_addr.py --mode acr_city` | v15b |
+| `v17/legal_tie_adds_v17c` | 735 | `legal_tie.py --gate_run nr` | v16 |
+
+Every script above takes `--data <D>` plus the listed arguments; its docstring gives the full command.
+`legal_tiebreak_adds`: an address-less record whose core name (as a set of words) belongs to 2 or 3 S1 and whose normalised
+legal form is on exactly one of them goes to that S1. `legal_tie.py` is the later, refined version of the same rule.
+
+R3 (Double Metaphone of the name + house number) and R6 (same-name compact key at a shared house number or city word), US/India.
+They score route-only candidates with the e5-base round-2 cross-encoder + a small XGBoost gated on clean validation, and add
+them to a base build (v2h, i.e. its `matching_results.tsv` and `candidate_pairs.tsv`):
+```
+python src/r3_candidates.py --data <D> --work work --out r3_cand
+python src/r3_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/train.parquet,ce_data2/train.parquet \
+    --cand r3_cand --base_matching v2h/matching_results.tsv --base_candidates v2h/candidate_pairs.tsv --out r3_score
+python src/r3_build.py --data <D> --scored r3_score --base_matching v2h/matching_results.tsv \
+    --base_candidates v2h/candidate_pairs.tsv --out r3_build
+python src/r6_candidates.py --data <D> --work work --split train --out r6_cand
+python src/r6_candidates.py --data <D> --work work --split test --out r6_cand
+python src/r6_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/train.parquet,ce_data2/train.parquet \
+    --r3_cand r3_cand --r3_score r3_score --r6_cand r6_cand --r3_build r3_build \
+    --base_matching v2h/matching_results.tsv --base_candidates v2h/candidate_pairs.tsv --out r6_score
+python src/r3r6_merge.py --data <D> --r3 r3_score/route_adds_test.parquet --r6 r6_score/route_adds_test_v2.parquet \
+    --base_matching v2h/matching_results.tsv --claimed v4/matching_results.tsv --out kv_r3r6_extras.parquet
+```
+Run on our R3 and R6 outputs, `r3_build.py` reproduces our r3_v1 files (the same pairs) and `r3r6_merge.py` gives 7,155 of the
+7,156 pairs of `kv_r3r6_extras`. The other pair (S1-350491974, S2-172056214) is a family-completion pair that came with the
+merged file we cut the R3/R6 pairs from.
+
+## 7. Final build of the submitted file (`avg_ce4_v17c`, public LB 0.989828, the file in `output/`)
+Decode of the two runs with the cross-encoder ensemble (rounds 3, 4, 4b, Qwen; the French cross-encoder for France),
+US/India thresholds 0.8, France 0.87, the France generator rules and the route files, then first match for empty US/India
+S1 (blend >= 0.5); two more route steps are appended.
 ```
 R=src/artifacts/routes
-python src/final_build.py --data <D> --runs nr,nr10 \\
-  --ce nr/ce_test.parquet:1,nr10/cebase_ce_test.parquet:1,ce_base4/ce_test.parquet:1,ce_base4b/ce_test.parquet:1,qwen_ce_test.parquet:1 \\
-  --ce_fr nr/ce_test_france.parquet,nr10/ce_test_france_new.parquet \\
-  --rules A2P,A2F,A2N,HN_A,DP,E2,OOC,HNK --collapse_legal --first_min US=0.5,India=0.5 --first_skip_ea_ties \\
-  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/kv_r3r6_extras.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \\
+python src/final_build.py --data <D> --runs nr,nr10 \
+  --ce nr/ce_test.parquet:1,nr10/cebase_ce_test.parquet:1,ce_base4/ce_test.parquet:1,ce_base4b/ce_test.parquet:1,qwen_ce_test.parquet:1 \
+  --ce_fr nr/ce_test_france.parquet,nr10/ce_test_france_new.parquet \
+  --rules A2P,A2F,A2N,HN_A,DP,E2,OOC,HNK --collapse_legal --first_min US=0.5,India=0.5 --first_skip_ea_ties \
+  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/kv_r3r6_extras.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \
   --out v15b                                                   # 5,838,236 matches
 BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v15b v16 $R/v16/fr_unit_adds.parquet,$R/v16/fr_acr_city_shared_adds.parquet
 python src/legal_tie.py --data <D> --claimed v16/pred.parquet --gate_run nr --out legal_tie_adds_v17c.parquet   # = $R/v17/legal_tie_adds_v17c.parquet (735 pairs)
 BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v16 v17c $R/v17/legal_tie_adds_v17c.parquet   # 5,839,939 matches = output/
 ```
-With the shipped route files these commands regenerate `output/matching_results.tsv` byte-for-byte and the same candidate pairs.
-The route files themselves are regenerated by the scripts above from the decoded pairs of the previous step (commands in each
-script's docstring). Validator: `python3 utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv
---test-dir dataset/test --check-ids` -> PASS.
+`v17c/` then holds `matching_results.tsv` and `candidate_pairs.tsv` (= `output/`). `candidate_pairs.tsv` is the stage-1
+output of both runs plus the pairs accepted by the routes: 4.43 pairs per S1, 1.31x the final matches.
+Validator: `python3 utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv
+--test-dir <D>/test --check-ids` -> PASS.
 
 ## Source layout (src/)
-- `ber/normalize.py`, `ber/translit.py`: normalisation (accents, OCR digits, legal forms, street types EN/FR,
-  house numbers) and the learned Indic->Latin dictionary
+- `ber/normalize.py`, `ber/translit.py`: normalisation (accents, OCR digits, legal forms, street types EN/FR, house numbers)
+  and the learned Indic->Latin dictionary
 - `ber/blocking.py`, `ber/dense.py`: TF-IDF (sparse_dot_topn) and dense (exact blocked top-k on GPU) retrieval
 - `ber/features.py`: pair / competition / decoy-signature / global features, word log-odds fitting
-- `ber/pipeline.py`: stages, candidate union + pruning, decoders, prior-shift per-country thresholds
-- `run.py` (stages norm, block, dense, train, test), `ce_data.py` + `ce_train.py` (cross-encoder),
-  `fit_pseudo_odds.py` (unlabelled-country decoy words), `blend.py` (final decode + both output files)
+- `ber/pipeline.py`: stages (incl. the reverse-name route), candidate union + pruning, decoders, prior-shift thresholds
+- `ber/io.py`, `ber/metric.py`: TSV reading / writing, macro F0.5
+- `run.py` (stages norm, block, dense, namerev, train, test), `fit_translit.py` (Indic dictionary)
+- `ce_data.py` + `ce_train.py` (cross-encoders), `llm_ce.py` (Qwen LoRA), `fit_pseudo_odds.py` (French decoy words)
+- `sagemaker_pipeline.py`, `sagemaker_llm.py`: the AWS entry points of step 4 and the Qwen run
+- `native_route.py`, `r3_candidates.py`, `r3_score.py`, `r3_build.py`, `r6_candidates.py`, `r6_score.py`, `r3r6_merge.py`,
+  `france_name_replaced.py`, `france_thr_safe.py`, `france_shared_addr.py`, `legal_tie.py`: route and rule files (step 6)
+- `final_build.py` (decode of the final build), `append_routes.py` (the last two route steps), `blend.py` (the single-run
+  decode we used until 26 Sep, superseded by `final_build.py`)
+- `artifacts/`: `indic_dict.json`, `odds_extra_france_iso.parquet`, `routes/` (step 6)
 """
 
 
@@ -179,8 +268,6 @@ with zipfile.ZipFile(a.out, "w", zipfile.ZIP_DEFLATED) as z:
     for v, names in ROUTES.items():
         for f in names:
             z.write(f"{root}/artifacts/{v}/{f}.parquet", f"{base}/src/artifacts/routes/{v}/{f}.parquet")
-    for f in R3R6:
-        z.write(f"{root}/third_party/kavya_r3r6/{f}", f"{base}/src/routes_r3_r6/{f}")
     z.writestr(f"{base}/README.md", readme)
     z.writestr(f"{base}/requirements.txt", "\n".join(req) + "\n")
     if a.output:
