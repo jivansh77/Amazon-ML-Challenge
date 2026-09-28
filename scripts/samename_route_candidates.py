@@ -1,9 +1,11 @@
-"""R6 route candidates (US/India recall routes, follow-up): R5 + R6 for one split.
+"""Same-name route, step 1 of 2: candidates for one split (US/India recall routes, follow-up of the phonetic route).
 
-  python scripts/r6_candidates.py --data <D> --work work --split train --out work/r6_cand
-  python scripts/r6_candidates.py --data <D> --work work --split test --out work/r6_cand
+  python scripts/samename_route_candidates.py --data <D> --work work --split train --out work/samename_cand
+  python scripts/samename_route_candidates.py --data <D> --work work --split test --out work/samename_cand
 
---work is the pipeline work dir of steps 1-3. Only R6 is used downstream (scripts/r6_score.py).
+--work is the pipeline work dir of steps 1-3. The script builds two routes, labelled R5 and R6 in the output files (R1-R4 are
+the key routes of scripts/phonetic_route_candidates.py); only R6, the same-name route, is used downstream
+(scripts/samename_route_score.py).
 
 Current union = tok rank <= 20 | dense rank <= 20 | reverse dense rank <= 2 | reverse-name route rank <= 10.
   R5  reverse-name route deeper: for EVERY S2/S3 record without an address, its S1 ranks 11-25 by char 3-gram TF-IDF

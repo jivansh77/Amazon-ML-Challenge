@@ -1,14 +1,15 @@
-"""R3 route build: r3_v1 = the base build + R3 route adds (prob >= 0.70, unclaimed records, exclusivity);
+"""Phonetic route, step 3 of 3: build. r3_v1 = the base build + the phonetic (R3) route adds (prob >= 0.70, unclaimed records,
+exclusivity);
 rows of the test country without training labels (France) byte-identical; validator --check-ids; diff report.
 
-  python scripts/r3_build.py --data <D> --scored work/r3_score --base_matching BASE/matching_results.tsv \
-      --base_candidates BASE/candidate_pairs.tsv --out work/r3_build
+  python scripts/phonetic_route_build.py --data <D> --scored work/phonetic_score --base_matching BASE/matching_results.tsv \
+      --base_candidates BASE/candidate_pairs.tsv --out work/phonetic_build
 
-Writes output/matching_results_r3_v1.tsv and output/candidate_pairs_r3_v1.tsv to --out (the base of scripts/r6_score.py).
+Writes output/matching_results_r3_v1.tsv and output/candidate_pairs_r3_v1.tsv to --out (the base of scripts/samename_route_score.py).
 
-Based on scripts/r3_score.py (US/India recall routes, STEPS 4-6).
+Based on scripts/phonetic_route_score.py (US/India recall routes, STEPS 4-6).
 
-4  Score the kept-route candidates (from scripts/r3_candidates.py) for clean val and test: string features + the
+4  Score the kept-route candidates (from scripts/phonetic_route_candidates.py) for clean val and test: string features + the
    e5-base cross-encoder of round 2 (--ce_dir, fp16). Fit a small XGBoost on clean val (2 folds by S1, out-of-fold) predicting a
    match for the route-only candidates.
 5  GATE on clean val (reproduce the proxy blend first: dec p + base2 CE, logit w 0.6, thr 0.75 = 0.98942):
@@ -28,7 +29,7 @@ from ber.io import find_dataset_dir
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--data", required=True, help="dataset dir (train/ and test/)")
-ap.add_argument("--scored", required=True, help="scripts/r3_score.py output dir (route_adds_test.parquet)")
+ap.add_argument("--scored", required=True, help="scripts/phonetic_route_score.py output dir (route_adds_test.parquet)")
 ap.add_argument("--base_matching", required=True, help="matching_results.tsv of the decoded build the route extends")
 ap.add_argument("--base_candidates", required=True, help="candidate_pairs.tsv of that build")
 ap.add_argument("--validator", default="", help="the challenge's utils/validate_submission.py (optional)")

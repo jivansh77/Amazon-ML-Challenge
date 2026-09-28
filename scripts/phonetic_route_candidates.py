@@ -1,9 +1,10 @@
-"""R3 route candidates (US/India recall routes, STEPS 0-3).
+"""Phonetic route, step 1 of 3: candidates (US/India recall routes, STEPS 0-3).
 
-  python scripts/r3_candidates.py --data <D> --work work --out work/r3_cand
+  python scripts/phonetic_route_candidates.py --data <D> --work work --out work/phonetic_cand
 
 --work is the pipeline work dir of steps 1-3 (train/test *_s1n, *_s23n, *_cand, *_dense, *_dense_rev parquet files and
-val_scores.parquet). Only R3 is used downstream (scripts/r3_score.py); R1, R2, R4 are measured and written too.
+val_scores.parquet). The script compares five label-free key routes (R1, R1b, R2, R3, R4 below) on the training labels;
+only R3, the phonetic route, is used downstream (scripts/phonetic_route_score.py). The labels stay in the output files.
 
 STEP 0  current candidate union = tok rank <= 20 | dense rank <= 20 | reverse dense rank <= 2 (the caps of step 3)
         | reverse-name route top-10 (char 3-gram TF-IDF on the name, S2/S3 records WITHOUT an address;

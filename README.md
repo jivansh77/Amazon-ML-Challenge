@@ -21,11 +21,12 @@ business, from noisy names and addresses with no shared ids (`problem.md` has th
 | `src/ber/` | the library: normalisation, TF-IDF and dense retrieval, features, pipeline stages, decoders, I/O, metric |
 | `scripts/` | the runnable steps: `run.py` (pipeline stages), cross-encoders, Qwen, France rules, routes, `final_build.py`, plus helpers (`kaggle_push.py` launches a step as a Kaggle notebook, `make_code_zip.py` builds the package) |
 | `artifacts/` | the learned Indic dictionary, French decoy-word scores and the route pair files, in one folder per build (v11 ... v17) |
-| `third_party/kavya_r3r6/` | Kavya's original R3/R6 Kaggle notebooks; `scripts/r3_*.py`, `r6_*.py` and `r3r6_merge.py` are the same code as command-line scripts |
+| `third_party/kavya_r3r6/` | Kavya's original Kaggle notebooks for the phonetic and same-name routes (called R3 and R6 in her experiments); `scripts/phonetic_route_*.py`, `samename_route_*.py` and `phonetic_samename_merge.py` are the same code as command-line scripts |
 | `problem.md`, `instructions.md`, `videoppt.txt` | the challenge statement, rules and intro-video transcript |
 | `PLAN.md`, `RESEARCH_BRIEF.md` | our planning notes from the start of the challenge (historical) |
 
-`artifacts/` also keeps files from earlier builds; the package ships only the ones the final build reads.
+`artifacts/` also keeps files from earlier builds; the package ships only the ones the final build reads, and ships
+`v11/kv_r3r6_extras.parquet` under the name `phonetic_samename_adds.parquet`.
 
 ## Building the package
 ```

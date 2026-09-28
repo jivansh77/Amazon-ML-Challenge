@@ -24,11 +24,12 @@ req = ["polars==1.35.2", "pyarrow==24.0.0", "numpy==2.0.2", "scipy==1.16.3", "sc
        "xgboost==3.2.0", "rapidfuzz==3.14.6", "sparse_dot_topn==1.2.0", "indic_transliteration==2.3.82",
        "torch==2.10.0  # CUDA build for the dense / XGBoost / cross-encoder steps", "transformers==5.0.0",
        "sentence-transformers==5.4.1", "tokenizers==0.22.2",
-       "peft==0.20.0  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the R3 route (BSD)",
+       "peft==0.20.0  # Qwen LoRA (llm_ce.py)", "metaphone==0.6  # Double Metaphone for the phonetic route (BSD)",
        "# AWS steps (sagemaker_pipeline.py, sagemaker_llm.py): SageMaker PyTorch 2.7.1 GPU image + transformers==4.57.1"]
 SCRIPTS = ["run.py", "fit_translit.py", "ce_data.py", "ce_train.py", "fit_pseudo_odds.py", "blend.py", "llm_ce.py",
-           "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "r3_candidates.py", "r3_score.py", "r3_build.py",
-           "r6_candidates.py", "r6_score.py", "r3r6_merge.py", "france_name_replaced.py", "france_thr_safe.py",
+           "sagemaker_pipeline.py", "sagemaker_llm.py", "native_route.py", "phonetic_route_candidates.py",
+           "phonetic_route_score.py", "phonetic_route_build.py", "samename_route_candidates.py", "samename_route_score.py",
+           "phonetic_samename_merge.py", "france_name_replaced.py", "france_thr_safe.py",
            "france_shared_addr.py", "legal_tie.py", "final_build.py", "append_routes.py"]
 # route / rule pair files the submitted build reads (the --extra_pairs of final_build.py and the append_routes.py steps)
 ROUTES = {"v11": ["native_adds_q90", "kv_r3r6_extras"],
@@ -38,6 +39,7 @@ ROUTES = {"v11": ["native_adds_q90", "kv_r3r6_extras"],
           "v16": ["fr_unit_adds", "fr_acr_city_shared_adds"],
           "v17": ["legal_tie_adds_v17c"]}
 ODDS = ["odds_extra_france_iso.parquet"]   # calibrated French decoy words used by the final runs
+ZIP_NAME = {"kv_r3r6_extras": "phonetic_samename_adds"}   # route files shipped under a descriptive name
 
 readme = r"""# Business Entity Resolution (team Yoddhas, public leaderboard 0.989828)
 
@@ -87,7 +89,7 @@ LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data. `Documenta
   1x T4 or P100 16 GB).
 - AWS steps: SageMaker PyTorch 2.7.1 GPU image (Python 3.12, CUDA 12.8) with transformers 4.57.1 and peft 0.20.0. The top-5
   run and Qwen used ml.g5.12xlarge (4x A10G 24 GB, 192 GB RAM), the top-10 run ml.g4dn.16xlarge (1x T4, 256 GB RAM).
-- GPU steps: dense, train, test, the cross-encoders, R3/R6 scoring and Qwen; everything else runs on CPU.
+- GPU steps: dense, train, test, the cross-encoders, phonetic / same-name route scoring and Qwen; everything else runs on CPU.
 - `<D>` is the challenge's dataset folder (it contains `train/` and `test/`). Every other folder name below (`work`, `ce_b2`,
   `nr`, ...) is a work folder the commands create, relative to this folder.
 - All sampling is seeded. GPU training can differ in the last digits from one GPU to another, so a rerun gives near-identical
@@ -189,13 +191,13 @@ only for records the decode leaves unclaimed; `final_build.py --extra_pairs` app
 file wins a record). Each file was made against the build current at the time, i.e. the decode of step 7 with the files
 before it in that order ("Against" = the build the script read as `--claimed`):
 - v2h: the first decode of `nr` + `nr10` with the rounds 3/4/4b ensemble and the France rules A2, A2F, HN_A, DP, E2, OOC, HNK.
-- v3: v2h + rule fixes (A2P, A2N, the DP guard, dotted legal forms). v4: + native route. v6: + R3/R6.
+- v3: v2h + rule fixes (A2P, A2N, the DP guard, dotted legal forms). v4: + native-script route. v6: + phonetic and same-name routes.
 - v9s: + Qwen in the ensemble and the first tie-break. v10s ... v16: + the files below, in order.
 
 | File | Pairs | Made by | Against |
 |---|---|---|---|
 | `v11/native_adds_q90` | 8,480 | `native_route.py --work nat --claimed <v3> --cand <v3 candidates> --thr 0.9` | v3 |
-| `v11/kv_r3r6_extras` | 7,156 | R3/R6 scripts below, then `r3r6_merge.py` | v2h (base), v4 |
+| `v11/phonetic_samename_adds` | 7,156 | phonetic and same-name route scripts below, then `phonetic_samename_merge.py` | v2h (base), v4 |
 | `v13/fr_inv_adds` | 5,135 | `france_name_replaced.py --claimed <v9s> --out_inv` | v9s |
 | `v13/fr_acr_adds` | 1,727 | `france_name_replaced.py --claimed <v10s> --out_acr` | v10s |
 | `v13/fr_fuzzy_street_adds` | 1,181 | `france_name_replaced.py --mode fuzzy_street --out` | v11 |
@@ -213,22 +215,25 @@ Every script above takes `--data <D>` plus the listed arguments; its docstring g
 `legal_tiebreak_adds`: an address-less record whose core name (as a set of words) belongs to 2 or 3 S1 and whose normalised
 legal form is on exactly one of them goes to that S1. `legal_tie.py` is the later, refined version of the same rule.
 
-R3 (Double Metaphone of the name + house number) and R6 (same-name compact key at a shared house number or city word), US/India.
-They score route-only candidates with the e5-base round-2 cross-encoder + a small XGBoost gated on clean validation, and add
-them to a base build (v2h, i.e. its `matching_results.tsv` and `candidate_pairs.tsv`):
+**Phonetic route** (`phonetic_route_*.py`): Double Metaphone codes of the first two name words + the house number.
+**Same-name route** (`samename_route_*.py`): the same name with the spaces removed, at a shared house number or city word.
+Both are for US/India records no other route proposed. Their candidates are scored with the e5-base round-2 cross-encoder + a
+small XGBoost, gated on clean validation, and added to a base build (v2h: its `matching_results.tsv` and `candidate_pairs.tsv`);
+`phonetic_samename_merge.py` combines the two into one route file.
 ```
-python src/r3_candidates.py --data <D> --work work --out r3_cand
-python src/r3_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/train.parquet,ce_data2/train.parquet \
-    --cand r3_cand --base_matching v2h/matching_results.tsv --base_candidates v2h/candidate_pairs.tsv --out r3_score
-python src/r3_build.py --data <D> --scored r3_score --base_matching v2h/matching_results.tsv \
-    --base_candidates v2h/candidate_pairs.tsv --out r3_build
-python src/r6_candidates.py --data <D> --work work --split train --out r6_cand
-python src/r6_candidates.py --data <D> --work work --split test --out r6_cand
-python src/r6_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/train.parquet,ce_data2/train.parquet \
-    --r3_cand r3_cand --r3_score r3_score --r6_cand r6_cand --r3_build r3_build \
-    --base_matching v2h/matching_results.tsv --base_candidates v2h/candidate_pairs.tsv --out r6_score
-python src/r3r6_merge.py --data <D> --r3 r3_score/route_adds_test.parquet --r6 r6_score/route_adds_test_v2.parquet \
-    --base_matching v2h/matching_results.tsv --claimed v4/matching_results.tsv --out kv_r3r6_extras.parquet
+python src/phonetic_route_candidates.py --data <D> --work work --out phonetic_cand
+python src/phonetic_route_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/train.parquet,ce_data2/train.parquet \
+    --cand phonetic_cand --base_matching v2h/matching_results.tsv --base_candidates v2h/candidate_pairs.tsv --out phonetic_score
+python src/phonetic_route_build.py --data <D> --scored phonetic_score --base_matching v2h/matching_results.tsv \
+    --base_candidates v2h/candidate_pairs.tsv --out phonetic_build
+python src/samename_route_candidates.py --data <D> --work work --split train --out samename_cand
+python src/samename_route_candidates.py --data <D> --work work --split test --out samename_cand
+python src/samename_route_score.py --data <D> --work work --ce_dir ce_b2 --ce_train ce_data/train.parquet,ce_data2/train.parquet \
+    --cand samename_cand --phonetic_cand phonetic_cand --phonetic_score phonetic_score --phonetic_build phonetic_build \
+    --base_matching v2h/matching_results.tsv --base_candidates v2h/candidate_pairs.tsv --out samename_score
+python src/phonetic_samename_merge.py --data <D> --phonetic phonetic_score/route_adds_test.parquet \
+    --samename samename_score/route_adds_test_v2.parquet --base_matching v2h/matching_results.tsv \
+    --claimed v4/matching_results.tsv --out phonetic_samename_adds.parquet
 ```
 
 ## 7. Final build of the submitted file (`avg_ce4_v17c`, public LB 0.989828, the file in `output/`)
@@ -241,7 +246,7 @@ python src/final_build.py --data <D> --runs nr,nr10 \
   --ce nr/ce_test.parquet:1,nr10/cebase_ce_test.parquet:1,ce_base4/ce_test.parquet:1,ce_base4b/ce_test.parquet:1,qwen_ce_test.parquet:1 \
   --ce_fr nr/ce_test_france.parquet,nr10/ce_test_france_new.parquet \
   --rules A2P,A2F,A2N,HN_A,DP,E2,OOC,HNK --collapse_legal --first_min US=0.5,India=0.5 --first_skip_ea_ties \
-  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/kv_r3r6_extras.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \
+  --extra_pairs $R/v11/native_adds_q90.parquet,$R/v11/phonetic_samename_adds.parquet,$R/v13/fr_inv_adds.parquet,$R/v13/fr_acr_adds.parquet,$R/v13/fr_fuzzy_street_adds.parquet,$R/v13/legal_tiebreak_adds.parquet,$R/v13/fr_inv_city_adds_f.parquet,$R/v13/fr_acr_city_adds.parquet,$R/v13/fr_inv_legal_adds.parquet,$R/v15/fr_acr_shared_adds.parquet,$R/v15/fr_thr85_safe_adds.parquet \
   --out v15b                                                   # 5,838,236 matches
 BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v15b v16 $R/v16/fr_unit_adds.parquet,$R/v16/fr_acr_city_shared_adds.parquet
 python src/legal_tie.py --data <D> --claimed v16/pred.parquet --gate_run nr --out legal_tie_adds_v17c.parquet   # = $R/v17/legal_tie_adds_v17c.parquet (735 pairs)
@@ -262,8 +267,9 @@ Check with the challenge's validator: `python3 utils/validate_submission.py --ma
 - `run.py` (stages norm, block, dense, namerev, train, test), `fit_translit.py` (Indic dictionary)
 - `ce_data.py` + `ce_train.py` (cross-encoders), `llm_ce.py` (Qwen LoRA), `fit_pseudo_odds.py` (French decoy words)
 - `sagemaker_pipeline.py`, `sagemaker_llm.py`: the AWS entry points of step 4 and the Qwen run
-- `native_route.py`, `r3_candidates.py`, `r3_score.py`, `r3_build.py`, `r6_candidates.py`, `r6_score.py`, `r3r6_merge.py`,
-  `france_name_replaced.py`, `france_thr_safe.py`, `france_shared_addr.py`, `legal_tie.py`: route and rule files (step 6)
+- `native_route.py` (India native-script route), `phonetic_route_*.py` + `samename_route_*.py` + `phonetic_samename_merge.py`
+  (phonetic and same-name routes), `france_name_replaced.py`, `france_thr_safe.py`, `france_shared_addr.py` (France routes),
+  `legal_tie.py` (legal-form tie-break): the route and rule files of step 6
 - `final_build.py` (decode of the final build), `append_routes.py` (the last two route steps), `blend.py` (the single-run
   decode we used until 26 Sep, superseded by `final_build.py`)
 - `artifacts/`: `indic_dict.json`, `odds_extra_france_iso.parquet`, `routes/` (step 6)
@@ -287,7 +293,7 @@ with zipfile.ZipFile(a.out, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(f"{root}/artifacts/{f}", f"{base}/src/artifacts/{f}")
     for v, names in ROUTES.items():
         for f in names:
-            z.write(f"{root}/artifacts/{v}/{f}.parquet", f"{base}/src/artifacts/routes/{v}/{f}.parquet")
+            z.write(f"{root}/artifacts/{v}/{f}.parquet", f"{base}/src/artifacts/routes/{v}/{ZIP_NAME.get(f, f)}.parquet")
     z.writestr(f"{base}/README.md", readme)
     z.writestr(f"{base}/requirements.txt", "\n".join(req) + "\n")
     if a.output:

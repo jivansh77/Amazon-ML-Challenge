@@ -26,14 +26,14 @@ The key ideas:
 ## 2. Candidate generation / blocking strategy
 
 All blocking runs within country, on normalised text: accents stripped, OCR digits fixed, legal forms extracted (EN/FR/IN), street types canonicalised, house numbers extracted, and a learned Indic→Latin dictionary of 1,362 words applied.
-1. **Word TF-IDF** on the name core plus address (tokens in more than 1% of records dropped), top 20 S1 per record via sparse_dot_topn.
+1. **Word TF-IDF** on the name core plus address (tokens in more than 1% of records dropped), top 20 records per S1 via sparse_dot_topn.
 2. **Dense retrieval.** multilingual-e5-small embeddings of "name | address", exact top 20 per S1 on GPU. The reverse direction adds the top 2 S1 for each record.
 3. **Reverse-name route for records without an address.** Top 5 (and top 10 in a second run) S1 by character-3-gram TF-IDF on the name. Recall rises from 0.9849 to 0.9888.
 4. **Learned filter.** A stage-1 XGBoost keeps each S1's top 15 with p ≥ 0.005. It removes ~88% of the pairs with no measurable recall loss.
 5. **Targeted routes:**
    - India native-script: transliteration, TF-IDF, classifier.
-   - R3 phonetic: Double Metaphone plus house number.
-   - R6: same-name compact key.
+   - Phonetic route: the same Double Metaphone code for the first two name words, plus the same house number.
+   - Same-name route: the same name once spaces are removed, at a shared house number or city word.
    - France address-keyed: invented names or acronyms at the house number + street + city of exactly one S1.
 
 Result:
@@ -86,7 +86,7 @@ Result:
 | Decoy features + e5-base cross-encoder | 0.9829 |
 | Reverse-name route | 0.98553 |
 | France generator rules | 0.98809 |
-| Native-script + R3/R6 routes | 0.98905 |
+| Native-script, phonetic and same-name routes | 0.98905 |
 | France invented-name route, Qwen, legal-form tie-break | 0.98941 |
 | **Final** | **0.989828** |
 
