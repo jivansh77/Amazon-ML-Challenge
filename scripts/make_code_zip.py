@@ -39,25 +39,59 @@ ROUTES = {"v11": ["native_adds_q90", "kv_r3r6_extras"],
           "v17": ["legal_tie_adds_v17c"]}
 ODDS = ["odds_extra_france_iso.parquet"]   # calibrated French decoy words used by the final runs
 
-readme = r"""# Business Entity Resolution (team Yoddhas)
+readme = r"""# Business Entity Resolution (team Yoddhas, public leaderboard 0.989828)
 
-Pipeline: normalise -> block (word TF-IDF + multilingual-e5 dense retrieval, forward + reverse, and a reverse-name route for
-records without an address) -> stage-1 XGBoost (also the learned candidate filter: top 15, p >= 0.005) -> stage-2 XGBoost
--> cross-encoder ensemble on the uncertain band (three multilingual-e5-base rounds + a Qwen2.5-7B LoRA; a French-adapted
-e5-small for France) -> logit blend -> exclusivity + per-country thresholds -> France generator rules and targeted routes
-for the records the decode leaves unclaimed.
+## What this is
+The task: for every business in Source 1 (S1), find all records in Sources 2 and 3 (S2/S3) that describe the same business.
+Names and addresses are noisy, there are no shared ids, and many S2/S3 records are generated lookalikes that match nothing.
+This folder is the full pipeline that produced our submission. Its outputs (in `output/` next to this folder):
+- `matching_results.tsv`: for every test S1, the S2/S3 ids we match to it (comma-separated; empty = no match).
+- `candidate_pairs.tsv`: for every test S1, the S2/S3 ids our blocking proposed, i.e. every pair the matcher scored.
+
+Method: retrieve candidates (word TF-IDF, multilingual dense retrieval, a name-only route for records without an address),
+score them with a two-stage XGBoost, re-score the uncertain ones with a cross-encoder ensemble, decode with exclusivity and
+per-country thresholds, then add France rules and targeted routes for records the decode leaves unclaimed.
 Models: XGBoost (Apache-2.0), intfloat/multilingual-e5-small and -base (MIT, 118M / 278M parameters), Qwen2.5-7B-Instruct
-LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data.
+LoRA pair classifier (Apache-2.0, 7.6B parameters). No external data. `Documentation_template.md` explains the method.
+
+## Terms used below
+- **S1**: a Source 1 business. **Record**: an S2 or S3 entry. **Pair**: an (S1, record) combination.
+- **Candidates**: the pairs we score at all, found by the retrieval ("blocking") routes.
+- **p**: the stage-2 XGBoost probability that a pair matches. **Uncertain band**: 0.02 <= p < 0.998, the pairs the
+  cross-encoders re-score.
+- **Cross-encoder (CE)**: a transformer that reads both texts ("name | address") together and scores the pair. The e5 models
+  are fine-tuned in rounds; Qwen is an LLM tuned the same way with LoRA. **Blend**: 0.6 x XGBoost + 0.4 x cross-encoders, on
+  the logit scale.
+- **Decode**: turning scores into matches. Each record goes to at most one S1, its best (**exclusivity**), and is kept if the
+  blend clears that country's threshold. A record the decode has given to an S1 is **claimed**.
+- **Route file**: a list of extra (S1, record) pairs for records the decode leaves unclaimed (e.g. the India native-script
+  route, France acronym records at the S1's address).
+- **Run**: one full pipeline pass with its scores (`work`, `nr`, `nr10`). **Build**: one decode of the runs' scores plus
+  route files (v2h, v3, ... v17c); v17c is the submitted file.
+- **France rules**: label-free rules for France (training has no French labels). A2P, DP, HN_A, ... are their names in
+  `final_build.py --rules`; the documentation (section 6.3) explains each.
+
+## How the steps fit together
+| Step | Produces | Where it ran | Time |
+|---|---|---|---|
+| 1. Main run `work` | normalised records, candidates, stage-2 scores | Kaggle (T4) | 6-7 h |
+| 2. Cross-encoders | training sets, e5-small and e5-base rounds 1-3b | Kaggle (T4) | about 13 GPU h |
+| 3. France | French decoy words, French-adapted cross-encoder | Kaggle (T4) | about 1 h |
+| 4. Reverse-name runs `nr`, `nr10` | the two runs the final build averages | AWS | 3 h and 5.4 h |
+| 5. Rounds 4/4b and Qwen | more cross-encoder scores on the runs' bands | Kaggle (P100), AWS | 5 h each; Qwen 13 h |
+| 6. Route files | already in `src/artifacts/routes/`; the commands show how each was made | | |
+| 7. Final build | `output/matching_results.tsv` and `output/candidate_pairs.tsv` | CPU | under 1 h |
 
 ## Environment
-Python 3.12, `pip install -r requirements.txt` (pinned: the Kaggle image most steps ran on; 4 CPU, 30 GB RAM, 1x T4 or
-P100 16 GB). The AWS steps ran in the SageMaker PyTorch 2.7.1 GPU image (Python 3.12, CUDA 12.8) with transformers 4.57.1
-and peft 0.20.0: the top-5 reverse-name run and the Qwen LoRA on ml.g5.12xlarge (4x A10G 24 GB, 192 GB RAM), the top-10 run
-on ml.g4dn.16xlarge (1x T4, 256 GB RAM).
-GPU steps: dense, train, test, the cross-encoders, R3/R6 scoring and Qwen; everything else runs on CPU.
-`<D>` is the folder that contains `train/` and `test/`; all other folders below are work folders created by the commands.
-All sampling is seeded. GPU training can differ in the last digits from one GPU to another, so a rerun gives near-identical
-scores; from the scores, step 7 regenerates `output/` exactly.
+- Python 3.12, `pip install -r requirements.txt`: pinned, the Kaggle image most steps ran on (4 CPU, 30 GB RAM,
+  1x T4 or P100 16 GB).
+- AWS steps: SageMaker PyTorch 2.7.1 GPU image (Python 3.12, CUDA 12.8) with transformers 4.57.1 and peft 0.20.0. The top-5
+  run and Qwen used ml.g5.12xlarge (4x A10G 24 GB, 192 GB RAM), the top-10 run ml.g4dn.16xlarge (1x T4, 256 GB RAM).
+- GPU steps: dense, train, test, the cross-encoders, R3/R6 scoring and Qwen; everything else runs on CPU.
+- `<D>` is the challenge's dataset folder (it contains `train/` and `test/`). Every other folder name below (`work`, `ce_b2`,
+  `nr`, ...) is a work folder the commands create, relative to this folder.
+- All sampling is seeded. GPU training can differ in the last digits from one GPU to another, so a rerun gives near-identical
+  scores; from the scores, step 7 regenerates `output/` exactly.
 
 ## 1. Main run `work` (Kaggle)
 ```
@@ -150,8 +184,10 @@ cp qwen/ce_test.parquet qwen_ce_test.parquet
 shuffled file, trained with the same script on a Colab A100; training ran 720 minutes, to 1,920,792 pairs.
 
 ## 6. Route and rule pair files (`src/artifacts/routes/`)
-Each file adds pairs only for records the decode leaves unclaimed; `final_build.py --extra_pairs` applies them in the order of
-step 7 (an earlier file wins a record). "Against" is the build whose matches the script read as `--claimed`:
+These files ship ready-made, and step 7 reads them directly; this section records how each one was made. Each file adds pairs
+only for records the decode leaves unclaimed; `final_build.py --extra_pairs` applies them in the order of step 7 (an earlier
+file wins a record). Each file was made against the build current at the time, i.e. the decode of step 7 with the files
+before it in that order ("Against" = the build the script read as `--claimed`):
 - v2h: the first decode of `nr` + `nr10` with the rounds 3/4/4b ensemble and the France rules A2, A2F, HN_A, DP, E2, OOC, HNK.
 - v3: v2h + rule fixes (A2P, A2N, the DP guard, dotted legal forms). v4: + native route. v6: + R3/R6.
 - v9s: + Qwen in the ensemble and the first tie-break. v10s ... v16: + the files below, in order.
@@ -213,8 +249,8 @@ BER_TEST_S1=<D>/test/test_source1.tsv python src/append_routes.py v16 v17c $R/v1
 ```
 `v17c/` then holds `matching_results.tsv` and `candidate_pairs.tsv` (= `output/`). `candidate_pairs.tsv` is the stage-1
 output of both runs plus the pairs accepted by the routes: 4.43 pairs per S1, 1.31x the final matches.
-Validator: `python3 utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv
---test-dir <D>/test --check-ids` -> PASS.
+Check with the challenge's validator: `python3 utils/validate_submission.py --matching output/matching_results.tsv
+--candidate output/candidate_pairs.tsv --test-dir <D>/test --check-ids` -> PASS.
 
 ## Source layout (src/)
 - `ber/normalize.py`, `ber/translit.py`: normalisation (accents, OCR digits, legal forms, street types EN/FR, house numbers)

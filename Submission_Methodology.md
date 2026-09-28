@@ -101,4 +101,4 @@ Result:
   - Nothing in the data resolves those ties beyond the legal form: row order, IDs, source split and sibling names all pick the owner at chance level on training labels.
 - **Tried and dropped:** rare-key hash blocking; char-3-gram blocking; CatBoost and random forests; decoy duplication (it leaks the label); an expected-F0.5 decoder; self-training the pair model on pseudo-labels; synthetic French cross-encoders.
 - **Compute:** Kaggle (T4/P100); AWS SageMaker ml.g5.12xlarge and ml.g4dn.16xlarge for the two reverse-name pipeline runs and ml.g5.12xlarge for the Qwen LoRA; Colab A100 for the first part of the Qwen training.
-- **Code:** `code/business_entity_resolution/`. Its README has the exact commands, and they regenerate the final matching file byte-for-byte from the build.
+- **Code:** `code/business_entity_resolution/`. Its README lists every command in run order; from the model scores, the final steps regenerate the submitted files exactly.
