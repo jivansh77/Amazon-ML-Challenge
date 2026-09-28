@@ -1,4 +1,7 @@
-# Team Yoddhas: Business Entity Resolution (final public leaderboard 0.98982)
+# Team Yoddhas: Business Entity Resolution (final public leaderboard 0.989828)
+
+**Team:** Jivansh Chawla (Team Leader), Tejashwini Gowda, Kavya Chetwani  
+**Institution:** Thadomal Shahani Engineering College (TSEC), Mumbai
 
 ## 1. Methodology used
 
@@ -75,7 +78,7 @@ Result: 7.67M candidate pairs (4.43 per S1), blocking recall 0.989, oracle macro
 | France generator rules | 0.98809 |
 | Native-script + R3/R6 routes | 0.98905 |
 | France invented-name route, Qwen, legal-form tie-break | 0.98941 |
-| **Final** | **0.98982** |
+| **Final** | **0.989828** |
 
 - **France generator rules:**
   - **Suffix operation = match.** One S1 word is dropped and a French suffix is appended after the legal form (Fils, Groupe, Développement, Associés, France, Services, Cie).

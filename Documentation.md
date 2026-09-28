@@ -1,14 +1,15 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
 **Team Name:** Yoddhas  
-**Team Members:** [List all team members]  
+**Team Members:** Jivansh Chawla (Team Leader), Tejashwini Gowda, Kavya Chetwani  
+**Institution:** Thadomal Shahani Engineering College (TSEC), Mumbai  
 **Submission Date:** 27 September 2026
 
 ---
 
 ## 1. Executive Summary
 
-We resolve every Source 1 business against ~10M Source 2/3 records with a four-step pipeline. **Final public leaderboard: 0.98982** (first submission 0.9705).
+We resolve every Source 1 business against ~10M Source 2/3 records with a four-step pipeline. **Final public leaderboard: 0.989828** (first submission 0.9705).
 1. **Blocking.** Three complementary retrievers (word TF-IDF, multilingual dense retrieval in both directions, and a name-only route for records without an address), unioned and cut by a learned first-stage model, plus a few targeted routes. This gives **4.4 candidates per S1** and keeps **98.9% of true matches**.
 2. **Scoring.** A two-stage XGBoost model scores the candidates using similarity, competition and "decoy-signature" features. Two full runs are averaged.
 3. **Uncertain cases.** An ensemble of fine-tuned cross-encoders (three multilingual-e5-base rounds and a Qwen2.5-7B LoRA pair classifier) re-scores the pairs the model is unsure about.
@@ -224,7 +225,7 @@ The France rules and routes cannot be measured on validation (no French labels).
 | France generator rules v2 (suffix position, category swaps, out-of-candidate suffix copies), run average + 3-CE ensemble | 0.98809 |
 | India native-script route + R3/R6 routes | 0.98905 |
 | France invented-name route, Qwen in the ensemble, legal-form tie-break (2–3 same-name S1s) | 0.98941 |
-| **Final: France acronym / per-city / shared-address routes, first match for empty S1, extended legal-form tie-break** | **0.98982** |
+| **Final: France acronym / per-city / shared-address routes, first match for empty S1, extended legal-form tie-break** | **0.989828** |
 
 **Unseen-country stand-in** (train on US only, validate on India):
 - F0.5 falls from 0.984 to 0.933. That confirms France's implied ~0.92 is a transfer problem, not bad luck.
@@ -275,11 +276,11 @@ The France rules and routes cannot be measured on validation (no French labels).
 ---
 
 
-## 6. Final submission (`avg_ce4_v17c`, public LB 0.98982)
+## 6. Final submission (`avg_ce4_v17c`, public LB 0.989828)
 
 The submitted file builds on the pipeline above with four additions. Public LB history: `dec_cebase` 0.982855 → reverse-name
 route 0.98553 → France generator rules 0.98809 → native-script and R3/R6 routes 0.989052 → France invented-name rule 0.989412
-→ **final 0.98982**. The final step (+0.0004) adds label-validated France address routes, first matches for empty S1s and the
+→ **final 0.989828**. The final step (+0.0004) adds label-validated France address routes, first matches for empty S1s and the
 extended legal-form tie-break. The submitted file has 5,839,939 matches: 3.37 per S1 (US 3.39, India 3.38, France 3.32), and
 5.8% of S1 are predicted empty.
 
@@ -330,7 +331,7 @@ Entity resolution at this scale is won in the tails. Candidates are cheap to ret
 - correcting thresholds for the test population's decoy density;
 - for France, reading the generator's operations off the test data and admitting a rule only when the same class is clean in the labelled countries.
 
-The public leaderboard rose from 0.9705 to 0.98982. What remains is mostly structural. A record without an address whose name belongs to several S1s cannot be attributed from the data, except by its legal form. Validation scores must be read with the test prior shift in mind.
+The public leaderboard rose from 0.9705 to 0.989828. What remains is mostly structural. A record without an address whose name belongs to several S1s cannot be attributed from the data, except by its legal form. Validation scores must be read with the test prior shift in mind.
 
 ---
 
